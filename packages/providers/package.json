@@ -1,0 +1,17 @@
+{
+  "name": "@quotaloop/providers",
+  "version": "0.1.0-beta.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@quotaloop/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4",
+    "typescript": "^5.8.3"
+  }
+}

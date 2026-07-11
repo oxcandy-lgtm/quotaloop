@@ -1,6 +1,7 @@
 {
   "name": "quotaloop",
   "private": true,
+  "type": "module",
   "version": "0.1.0-beta.0",
   "packageManager": "pnpm@11.7.0",
   "scripts": {
@@ -21,4 +22,3 @@
     "typescript-eslint": "^8.38.0"
   }
 }
-

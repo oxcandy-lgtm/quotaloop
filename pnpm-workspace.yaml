@@ -2,3 +2,7 @@ packages:
   - apps/*
   - packages/*
 
+onlyBuiltDependencies:
+  - esbuild
+allowBuilds:
+  esbuild: true

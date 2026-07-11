@@ -9,7 +9,19 @@ export default tseslint.config(
   {
     files: ["**/*.{ts,tsx}"],
     languageOptions: { globals: { ...globals.browser, ...globals.node } },
-    rules: { "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }] }
-  }
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_" },
+      ],
+    },
+  },
+  {
+    files: ["**/*.mjs"],
+    languageOptions: { globals: globals.node },
+  },
+  {
+    files: ["**/public/sw.js"],
+    languageOptions: { globals: globals.serviceworker },
+  },
 );
-
