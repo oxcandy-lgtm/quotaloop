@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="QuotaLoop app icon">
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4f8cff"/>
+      <stop offset="1" stop-color="#1855cc"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#background)"/>
+  <path d="M368 180a144 144 0 1 0 20 178" fill="none" stroke="#fff" stroke-width="52" stroke-linecap="round"/>
+  <circle cx="368" cy="180" r="30" fill="#fff"/>
+</svg>
