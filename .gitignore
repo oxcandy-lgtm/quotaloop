@@ -1,0 +1,13 @@
+node_modules/
+dist/
+target/
+.DS_Store
+.env
+.env.*
+!.env.example
+coverage/
+playwright-report/
+test-results/
+src-tauri/gen/
+*.log
+
