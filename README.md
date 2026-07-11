@@ -35,4 +35,3 @@ pnpm --filter @quotaloop/desktop tauri dev
 ```
 
 QuotaLoop does not read repositories, accept arbitrary shell commands, or upload credentials. See [Privacy](PRIVACY.md), [Security](SECURITY.md), and [Public Safety](PUBLIC_SAFETY.md).
-
