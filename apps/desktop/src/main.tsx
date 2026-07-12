@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import {
   isPermissionGranted,
   requestPermission,
@@ -22,12 +22,14 @@ import type {
   ExecutionRecord,
   QuotaAutomationPolicy,
 } from "@quotaloop/contracts";
+import { automationPolicySchema } from "@quotaloop/contracts";
 import {
   DesktopAutomationController,
   loadHistory,
   loadPolicy,
 } from "./automation-controller";
 import { resolveDesktopSurface } from "./surface";
+import { shouldDeliverNotification } from "./notification-controller";
 import "./styles.css";
 
 type DetectionState =
@@ -57,7 +59,6 @@ function PopoverApp() {
     ),
   );
   const [refreshing, setRefreshing] = useState(false);
-  const [paused, setPaused] = useState(() => loadPolicy().paused);
   const [history, setHistory] = useState<History[]>(
     () => loadHistory() as History[],
   );
@@ -65,6 +66,7 @@ function PopoverApp() {
   const [policy, setPolicyState] = useState<QuotaAutomationPolicy>(() =>
     loadPolicy(),
   );
+  const policyRef = useRef(policy);
   const [notificationsEnabled, setNotificationsEnabled] = useState(
     () =>
       (
@@ -95,18 +97,20 @@ function PopoverApp() {
     setDetections(
       Object.fromEntries(results.map((result) => [result.provider_id, result])),
     );
+    void invoke("broadcast_provider_state", { providers: results });
     setRefreshing(false);
   }, []);
   const updatePolicy = (next: QuotaAutomationPolicy) => {
+    policyRef.current = next;
     controllerRef.current.setPolicy(next);
     setPolicyState(next);
+    void invoke("broadcast_policy_state", { policy: next });
   };
   const togglePause = async () => {
     const next = await invoke<boolean>("set_automation_paused", {
-      paused: !policy.paused,
+      paused: !policyRef.current.paused,
     });
-    setPaused(next);
-    updatePolicy({ ...policy, paused: next });
+    updatePolicy({ ...policyRef.current, paused: next });
   };
   useEffect(() => {
     void isPermissionGranted()
@@ -121,9 +125,9 @@ function PopoverApp() {
     const pauseUnlisten = listen<boolean>(
       "automation-state-changed",
       (event) => {
-        setPaused(event.payload);
         setPolicyState((current) => {
           const next = { ...current, paused: event.payload };
+          policyRef.current = next;
           controllerRef.current.setPolicy(next);
           return next;
         });
@@ -133,10 +137,18 @@ function PopoverApp() {
       "automation-pause-requested",
       () => void togglePause(),
     );
+    const policyRequestUnlisten = listen<unknown>(
+      "automation-policy-requested",
+      (event) => {
+        const parsed = automationPolicySchema.safeParse(event.payload);
+        if (parsed.success) updatePolicy(parsed.data);
+      },
+    );
     return () => {
       void refreshUnlisten.then((unlisten) => unlisten());
       void pauseUnlisten.then((unlisten) => unlisten());
       void pauseRequestUnlisten.then((unlisten) => unlisten());
+      void policyRequestUnlisten.then((unlisten) => unlisten());
     };
   }, [refresh]);
   useEffect(() => {
@@ -144,6 +156,9 @@ function PopoverApp() {
       const result = await controllerRef.current.evaluateAndRun();
       if (result.record) {
         setHistory(controllerRef.current.records as History[]);
+        void invoke("broadcast_history_state", {
+          history: controllerRef.current.records,
+        });
         await refresh();
         void notifyCompletion(result.eventKey);
       }
@@ -168,6 +183,9 @@ function PopoverApp() {
     const result = await controllerRef.current.evaluateAndRun(new Date(), true);
     if (result.record) {
       setHistory(controllerRef.current.records as History[]);
+      void invoke("broadcast_history_state", {
+        history: controllerRef.current.records,
+      });
       await notifyCompletion(result.eventKey);
     } else setNotice(`Demo blocked: ${result.decision.reason}`);
   };
@@ -176,15 +194,18 @@ function PopoverApp() {
       localStorage.getItem("quotaloop.desktop.notifications") ??
         '{"enabled":false,"actionCompleted":true}',
     ) as { enabled: boolean; actionCompleted: boolean };
-    if (
-      !prefs.enabled ||
-      !prefs.actionCompleted ||
-      localStorage.getItem("quotaloop.desktop.last-notification-event") ===
-        eventKey
-    )
-      return;
     try {
-      if (!(await isPermissionGranted())) return;
+      if (
+        !shouldDeliverNotification({
+          preferences: prefs,
+          permission: await isPermissionGranted(),
+          eventKey,
+          lastEventKey: localStorage.getItem(
+            "quotaloop.desktop.last-notification-event",
+          ),
+        })
+      )
+        return;
       await sendNotification({
         title: "QuotaLoop demo action complete",
         body: "Synthetic provider action completed locally.",
@@ -279,7 +300,11 @@ function PopoverApp() {
           <span>AUTOMATION</span>
           <strong>
             <Pause />
-            {paused ? "Paused" : policy.enabled ? "Enabled" : "Off by default"}
+            {policy.paused
+              ? "Paused"
+              : policy.enabled
+                ? "Enabled"
+                : "Off by default"}
           </strong>
         </div>
         <small>Only the synthetic Demo action can run in this beta.</small>
@@ -301,7 +326,7 @@ function PopoverApp() {
         </button>
         <button onClick={() => void togglePause()}>
           <Pause />
-          {paused ? "Resume" : "Pause"}
+          {policy.paused ? "Resume" : "Pause"}
         </button>
         <button
           onClick={() => updatePolicy({ ...policy, enabled: !policy.enabled })}
@@ -344,6 +369,43 @@ function PopoverApp() {
 }
 
 function DashboardApp() {
+  const [policy, setPolicy] = useState(() => loadPolicy());
+  const [history, setHistory] = useState<History[]>(
+    () => loadHistory() as History[],
+  );
+  const [detections, setDetections] = useState<Record<string, Detection>>({});
+  const [refreshing, setRefreshing] = useState(false);
+  useEffect(() => {
+    void emit("refresh-providers");
+    const listeners = Promise.all([
+      listen<QuotaAutomationPolicy>("automation-policy-changed", (event) =>
+        setPolicy(event.payload),
+      ),
+      listen<History[]>("history-changed", (event) =>
+        setHistory(event.payload),
+      ),
+      listen<Detection[]>("provider-state-changed", (event) =>
+        setDetections(
+          Object.fromEntries(
+            event.payload.map((item) => [item.provider_id, item]),
+          ),
+        ),
+      ),
+    ]);
+    return () => {
+      void listeners.then((items) => items.forEach((item) => item()));
+    };
+  }, []);
+  const refresh = async () => {
+    setRefreshing(true);
+    await emit("refresh-providers");
+    setRefreshing(false);
+  };
+  const updatePolicy = (next: QuotaAutomationPolicy) =>
+    void invoke("request_policy_update", { policy: next });
+  const detectedCount = Object.values(detections).filter(
+    (item) => item.state === "installed",
+  ).length;
   return (
     <main className="dashboard-surface">
       <header>
@@ -356,41 +418,83 @@ function DashboardApp() {
       <section className="dashboard-grid">
         <section className="dashboard-card">
           <h2>Overview</h2>
-          <p>Desktop agent is connected. Demo data is synthetic.</p>
-          <strong>Codex Demo · 72% session · 64% weekly</strong>
+          <p>
+            {detectedCount} provider{detectedCount === 1 ? "" : "s"} detected by
+            the local allowlist.
+          </p>
+          <strong>Codex Demo · 72% session · 64% weekly (synthetic)</strong>
         </section>
         <section className="dashboard-card">
           <h2>Providers</h2>
-          <p>
-            Codex, Claude Code, Gemini CLI, and OpenCode use local detection
-            only.
-          </p>
-          <p>Quota and execution remain unavailable for non-demo providers.</p>
+          {providers.map((provider) => (
+            <p key={provider.id}>
+              <b>{provider.name}</b>:{" "}
+              {detections[provider.id]?.state ?? "not checked"}
+            </p>
+          ))}
+          <button onClick={() => void refresh()} disabled={refreshing}>
+            {refreshing ? "Refreshing…" : "Refresh providers"}
+          </button>
         </section>
         <section className="dashboard-card">
           <h2>Automation</h2>
           <p>
-            Only the Mock Codex Demo action can execute. Controls are owned by
-            the tray authority.
+            Only the Mock Codex Demo action can execute. Controls route to the
+            Popover authority.
           </p>
-          <button onClick={() => void invoke("show_main_window")}>
-            Open tray controls
+          <p>
+            State:{" "}
+            <b>
+              {policy.paused
+                ? "Paused"
+                : policy.enabled
+                  ? "Enabled"
+                  : "Off by default"}
+            </b>
+          </p>
+          <p>
+            Daily maximum: {policy.maximumRunsPerDay} · Active hours:{" "}
+            {policy.activeHours.start}–{policy.activeHours.end} ·{" "}
+            {policy.activeHours.timeZone}
+          </p>
+          <button
+            onClick={() =>
+              updatePolicy({ ...policy, enabled: !policy.enabled })
+            }
+          >
+            {policy.enabled ? "Disable automation" : "Enable automation"}
+          </button>
+          <button
+            onClick={() => updatePolicy({ ...policy, paused: !policy.paused })}
+          >
+            {policy.paused ? "Resume" : "Pause"}
           </button>
         </section>
         <section className="dashboard-card">
           <h2>History</h2>
-          <p>
-            Execution history is persisted by the single desktop authority and
-            shared on next refresh.
-          </p>
+          {history.length ? (
+            history.slice(0, 5).map((item) => (
+              <p key={item.id}>
+                <b>{item.outcome}</b> ·{" "}
+                {new Date(item.completedAt).toLocaleString()} · {item.reason}
+              </p>
+            ))
+          ) : (
+            <p>No execution records.</p>
+          )}
         </section>
         <section className="dashboard-card">
           <h2>Signals</h2>
-          <p>No live provider signals are available in this beta.</p>
+          <p>
+            Demo signal fixtures only; no live provider signals are available.
+          </p>
         </section>
         <section className="dashboard-card">
           <h2>Subscriptions</h2>
-          <p>Subscription data is not connected in this beta.</p>
+          <p>
+            Local subscription model is empty in this beta; cloud billing is
+            disabled.
+          </p>
         </section>
         <section className="dashboard-card">
           <h2>Settings &amp; safety</h2>
@@ -398,6 +502,16 @@ function DashboardApp() {
             Notifications, pause state, and synthetic execution stay local. No
             shell or repository access.
           </p>
+          <button
+            onClick={() => {
+              localStorage.removeItem("quotaloop.desktop.history");
+              localStorage.removeItem("quotaloop.desktop.policy");
+              setHistory([]);
+              setPolicy(loadPolicy());
+            }}
+          >
+            Clear local data
+          </button>
         </section>
       </section>
     </main>

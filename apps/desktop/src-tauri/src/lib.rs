@@ -135,6 +135,26 @@ fn set_automation_paused(app: tauri::AppHandle, paused: bool) -> bool {
 }
 
 #[tauri::command]
+fn request_policy_update(app: tauri::AppHandle, policy: serde_json::Value) {
+    let _ = app.emit("automation-policy-requested", policy);
+}
+
+#[tauri::command]
+fn broadcast_policy_state(app: tauri::AppHandle, policy: serde_json::Value) {
+    let _ = app.emit("automation-policy-changed", policy);
+}
+
+#[tauri::command]
+fn broadcast_history_state(app: tauri::AppHandle, history: serde_json::Value) {
+    let _ = app.emit("history-changed", history);
+}
+
+#[tauri::command]
+fn broadcast_provider_state(app: tauri::AppHandle, providers: serde_json::Value) {
+    let _ = app.emit("provider-state-changed", providers);
+}
+
+#[tauri::command]
 fn show_main_window(app: tauri::AppHandle) {
     show_window(&app, "popover");
 }
@@ -231,6 +251,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_platform_info,
             set_automation_paused,
+            request_policy_update,
+            broadcast_policy_state,
+            broadcast_history_state,
+            broadcast_provider_state,
             show_main_window,
             open_dashboard,
             get_window_label,

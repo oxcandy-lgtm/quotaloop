@@ -58,4 +58,17 @@ describe("DesktopAutomationController", () => {
       "duplicate_execution",
     );
   });
+  it("preserves every policy field when pause changes", () => {
+    const controller = new DesktopAutomationController();
+    const original = {
+      ...controller.currentPolicy,
+      enabled: true,
+      maximumRunsPerDay: 7,
+      minimumRemainingPercent: 55,
+      activeHours: { start: "23:00", end: "04:00", timeZone: "Asia/Tokyo" },
+    };
+    controller.setPolicy(original);
+    controller.setPolicy({ ...controller.currentPolicy, paused: true });
+    expect(controller.currentPolicy).toEqual({ ...original, paused: true });
+  });
 });
