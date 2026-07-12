@@ -28,6 +28,12 @@ importers:
 
   apps/desktop:
     dependencies:
+      "@quotaloop/automation":
+        specifier: workspace:*
+        version: link:../../packages/automation
+      "@quotaloop/providers":
+        specifier: workspace:*
+        version: link:../../packages/providers
       "@tauri-apps/api":
         specifier: ^2.7.0
         version: 2.11.1

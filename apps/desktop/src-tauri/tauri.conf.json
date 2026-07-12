@@ -17,7 +17,7 @@
         "width": 380,
         "height": 540,
         "resizable": false,
-        "visible": true,
+        "visible": false,
         "decorations": false,
         "alwaysOnTop": true
       }
@@ -26,5 +26,14 @@
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'"
     }
   },
-  "bundle": { "active": true, "targets": "all", "icon": [] }
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
 }

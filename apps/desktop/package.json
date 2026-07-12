@@ -11,6 +11,8 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@quotaloop/automation": "workspace:*",
+    "@quotaloop/providers": "workspace:*",
     "@tauri-apps/api": "^2.7.0",
     "@tauri-apps/plugin-notification": "^2.3.0",
     "lucide-react": "^0.525.0",

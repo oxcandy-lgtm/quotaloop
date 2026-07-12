@@ -115,6 +115,10 @@ header strong {
   display: grid;
   gap: 9px;
 }
+.provider.compact .muted {
+  color: #9aa6b5;
+  background: #26313d;
+}
 .automation {
   display: grid;
   gap: 5px;
@@ -133,9 +137,19 @@ header strong {
 .automation svg {
   width: 12px;
 }
+.notice {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  color: #f0c36a;
+  font-size: 10px;
+}
+.notice svg {
+  width: 13px;
+}
 nav {
   display: grid;
-  grid-template-columns: 1fr 1fr 1.3fr;
+  grid-template-columns: repeat(2, 1fr);
   gap: 6px;
   border-top: 1px solid #26313d;
   padding-top: 15px;
@@ -159,4 +173,27 @@ button.primary {
   border: 0;
   background: #3378ef;
   color: white;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.history {
+  border-top: 1px solid #26313d;
+  margin-top: 14px;
+  padding-top: 12px;
+  display: grid;
+  gap: 6px;
+}
+.history > small {
+  color: #8491a1;
+  font-size: 9px;
+}
+.history > div {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+}
+.history span {
+  color: #8491a1;
 }

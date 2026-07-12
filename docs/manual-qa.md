@@ -14,3 +14,5 @@
 - Test notification permission and a local test notification.
 - Verify sleep/resume causes scheduler reevaluation without duplicate actions.
 - Confirm fixed CLI detection does not access a repository or invoke a shell.
+- Verify the native tray menu contains Open QuotaLoop, Refresh providers, Pause/resume automation, and Quit; left click toggles the hidden window.
+- Verify the tray application starts hidden, closing hides it, and the macOS build uses accessory activation.
