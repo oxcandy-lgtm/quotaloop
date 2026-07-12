@@ -1,0 +1,18 @@
+{
+  "name": "@quotaloop/automation",
+  "version": "0.1.0-beta.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@quotaloop/contracts": "workspace:*",
+    "@quotaloop/core": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4",
+    "typescript": "^5.8.3"
+  }
+}

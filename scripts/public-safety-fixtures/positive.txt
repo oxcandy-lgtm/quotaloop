@@ -1,0 +1,8 @@
+Authorization: Bearer test-token-1234567890
+Cookie: session=test-cookie-value
+api_key = sk-example-token-12345678901234567890
+/Users/demo-user/private
+C:\Users\demo-user\private
+user@not-example.invalid
+https://hooks.slack.com/services/T000/B000/example
+-----BEGIN OPENSSH PRIVATE KEY-----

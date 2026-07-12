@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Minimal desktop window and notification permissions",
+  "windows": ["popover", "dashboard"],
+  "permissions": ["core:default", "notification:default"]
+}
