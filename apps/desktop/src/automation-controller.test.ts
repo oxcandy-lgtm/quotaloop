@@ -11,6 +11,7 @@ Object.defineProperty(globalThis, "localStorage", {
     clear: () => storage.clear(),
     getItem: (key: string) => storage.get(key) ?? null,
     setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
   },
 });
 
@@ -70,5 +71,19 @@ describe("DesktopAutomationController", () => {
     controller.setPolicy(original);
     controller.setPolicy({ ...controller.currentPolicy, paused: true });
     expect(controller.currentPolicy).toEqual({ ...original, paused: true });
+  });
+  it("resets canonical policy, memory, and persisted records safely", async () => {
+    const controller = new DesktopAutomationController();
+    controller.setPolicy({ ...controller.currentPolicy, enabled: true });
+    await controller.evaluateAndRun(new Date());
+    expect(controller.records).toHaveLength(1);
+    const reset = controller.resetToSafeDefaults();
+    expect(reset.policy.enabled).toBe(false);
+    expect(reset.policy.paused).toBe(false);
+    expect(controller.records).toEqual([]);
+    expect(loadHistory()).toEqual([]);
+    expect(loadPolicy().enabled).toBe(false);
+    const blocked = await controller.evaluateAndRun(new Date());
+    expect(blocked.decision.reason).toBe("disabled");
   });
 });

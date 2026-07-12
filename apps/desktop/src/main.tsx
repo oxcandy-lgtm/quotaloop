@@ -112,6 +112,15 @@ function PopoverApp() {
     });
     updatePolicy({ ...policyRef.current, paused: next });
   };
+  const resetLocalData = () => {
+    const result = controllerRef.current.resetToSafeDefaults();
+    policyRef.current = result.policy;
+    setPolicyState(result.policy);
+    setHistory([]);
+    setNotice("Local data cleared; automation is OFF.");
+    void invoke("broadcast_policy_state", { policy: result.policy });
+    void invoke("broadcast_history_state", { history: [] });
+  };
   useEffect(() => {
     void isPermissionGranted()
       .then((granted) =>
@@ -144,11 +153,16 @@ function PopoverApp() {
         if (parsed.success) updatePolicy(parsed.data);
       },
     );
+    const clearDataUnlisten = listen(
+      "clear-local-data-requested",
+      resetLocalData,
+    );
     return () => {
       void refreshUnlisten.then((unlisten) => unlisten());
       void pauseUnlisten.then((unlisten) => unlisten());
       void pauseRequestUnlisten.then((unlisten) => unlisten());
       void policyRequestUnlisten.then((unlisten) => unlisten());
+      void clearDataUnlisten.then((unlisten) => unlisten());
     };
   }, [refresh]);
   useEffect(() => {
@@ -502,14 +516,7 @@ function DashboardApp() {
             Notifications, pause state, and synthetic execution stay local. No
             shell or repository access.
           </p>
-          <button
-            onClick={() => {
-              localStorage.removeItem("quotaloop.desktop.history");
-              localStorage.removeItem("quotaloop.desktop.policy");
-              setHistory([]);
-              setPolicy(loadPolicy());
-            }}
-          >
+          <button onClick={() => void invoke("request_clear_local_data")}>
             Clear local data
           </button>
         </section>

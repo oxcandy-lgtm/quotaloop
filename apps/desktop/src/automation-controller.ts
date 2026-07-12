@@ -14,6 +14,7 @@ import { MockCodexProvider } from "@quotaloop/providers";
 export type DesktopHistory = ExecutionRecord;
 export const POLICY_KEY = "quotaloop.desktop.policy";
 export const HISTORY_KEY = "quotaloop.desktop.history";
+export const NOTIFICATION_KEY = "quotaloop.desktop.notifications";
 const memory = new Map<string, string>();
 const store = {
   get: (key: string) =>
@@ -24,16 +25,13 @@ const store = {
     if (typeof localStorage === "undefined") memory.set(key, value);
     else localStorage.setItem(key, value);
   },
+  remove: (key: string) => {
+    if (typeof localStorage === "undefined") memory.delete(key);
+    else localStorage.removeItem(key);
+  },
 };
 
-export function loadPolicy(): QuotaAutomationPolicy {
-  try {
-    const value = JSON.parse(store.get(POLICY_KEY) ?? "null");
-    const parsed = automationPolicySchema.safeParse(value);
-    if (parsed.success) return parsed.data;
-  } catch {
-    /* use safe defaults */
-  }
+export function safeDefaultPolicy(): QuotaAutomationPolicy {
   return {
     enabled: false,
     paused: false,
@@ -47,6 +45,17 @@ export function loadPolicy(): QuotaAutomationPolicy {
     },
     targetProviders: ["codex-demo"],
   };
+}
+
+export function loadPolicy(): QuotaAutomationPolicy {
+  try {
+    const value = JSON.parse(store.get(POLICY_KEY) ?? "null");
+    const parsed = automationPolicySchema.safeParse(value);
+    if (parsed.success) return parsed.data;
+  } catch {
+    /* use safe defaults */
+  }
+  return safeDefaultPolicy();
 }
 export function loadHistory(): DesktopHistory[] {
   try {
@@ -85,6 +94,19 @@ export class DesktopAutomationController {
   setPolicy(policy: QuotaAutomationPolicy) {
     this.policy = policy;
     store.set(POLICY_KEY, JSON.stringify(policy));
+  }
+  resetToSafeDefaults(): {
+    policy: QuotaAutomationPolicy;
+    history: DesktopHistory[];
+  } {
+    const policy = safeDefaultPolicy();
+    this.policy = policy;
+    this.history = [];
+    store.remove(POLICY_KEY);
+    store.remove(HISTORY_KEY);
+    store.remove(NOTIFICATION_KEY);
+    store.remove("quotaloop.desktop.last-notification-event");
+    return { policy, history: [] };
   }
   async evaluateAndRun(now = new Date(), manualOverride = false) {
     const key = createIdempotencyKey(

@@ -140,6 +140,11 @@ fn request_policy_update(app: tauri::AppHandle, policy: serde_json::Value) {
 }
 
 #[tauri::command]
+fn request_clear_local_data(app: tauri::AppHandle) {
+    let _ = app.emit("clear-local-data-requested", ());
+}
+
+#[tauri::command]
 fn broadcast_policy_state(app: tauri::AppHandle, policy: serde_json::Value) {
     let _ = app.emit("automation-policy-changed", policy);
 }
@@ -252,6 +257,7 @@ pub fn run() {
             get_platform_info,
             set_automation_paused,
             request_policy_update,
+            request_clear_local_data,
             broadcast_policy_state,
             broadcast_history_state,
             broadcast_provider_state,
