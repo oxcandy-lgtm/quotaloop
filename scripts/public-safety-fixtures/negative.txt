@@ -1,0 +1,4 @@
+Demo user: user@example.com
+Docs host: example.com
+Docs IP: 192.0.2.10
+Demo path: synthetic local paths are not included in this negative fixture.

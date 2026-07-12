@@ -723,6 +723,8 @@ header h1 {
 }
 .drawer {
   width: min(420px, 90vw);
+  max-width: 100vw;
+  overflow-wrap: anywhere;
   background: var(--surface);
   padding: 35px;
   box-shadow: var(--shadow);
@@ -747,6 +749,7 @@ header h1 {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.7;
+  overflow-wrap: anywhere;
 }
 .onboarding {
   min-height: 100vh;

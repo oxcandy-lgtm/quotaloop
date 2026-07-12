@@ -19,6 +19,7 @@ jobs:
       - run: pnpm format:check
       - run: pnpm typecheck
       - run: pnpm test
+      - run: pnpm test:safety
       - run: pnpm build
       - run: pnpm safety
   desktop:
@@ -36,3 +37,7 @@ jobs:
       - run: pnpm --filter @quotaloop/desktop build
       - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
       - run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - if: matrix.os == 'macos-latest'
+        run: pnpm --filter @quotaloop/desktop tauri build --bundles app
+      - if: matrix.os == 'windows-latest'
+        run: pnpm --filter @quotaloop/desktop tauri build --bundles nsis

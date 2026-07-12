@@ -37,6 +37,9 @@ import {
 import { providerCatalog } from "@quotaloop/providers";
 import { LocalStorageRepository, type AppData } from "@quotaloop/storage";
 
+export type RuntimeMode = "demo" | "standalone_web" | "desktop_connected";
+export const runtimeMode: RuntimeMode = "standalone_web";
+
 const repo = new LocalStorageRepository();
 const initial: AppData = {
   schemaVersion: 1,
@@ -45,6 +48,12 @@ const initial: AppData = {
   subscriptions: [],
   theme: "system",
   onboardingComplete: false,
+  notifications: {
+    webEnabled: false,
+    desktopEnabled: false,
+    actionCompleted: true,
+    testNotification: true,
+  },
 };
 const signals: ResetSignal[] = [
   {
@@ -85,6 +94,7 @@ const nav = [
 export function App() {
   const [data, setData] = useState(() => repo.load(initial));
   const [help, setHelp] = useState(false);
+  const [helpProvider, setHelpProvider] = useState<string | null>(null);
   const save = (next: AppData) => {
     setData(next);
     repo.save(next);
@@ -128,7 +138,7 @@ export function App() {
           <div className="header-actions">
             <span className="agent-status">
               <i />
-              Agent ready
+              Desktop agent not connected
             </span>
             <button className="icon-button" aria-label="Notifications">
               <Bell size={18} />
@@ -143,7 +153,16 @@ export function App() {
           </div>
         </header>
         <Routes>
-          <Route path="/" element={<Overview data={data} save={save} />} />
+          <Route
+            path="/"
+            element={
+              <Overview
+                data={data}
+                save={save}
+                onHelpProvider={setHelpProvider}
+              />
+            }
+          />
           <Route path="/providers" element={<Providers />} />
           <Route
             path="/automation"
@@ -167,6 +186,12 @@ export function App() {
       </main>
       <MobileNav />
       {help && <SafetyDrawer onClose={() => setHelp(false)} />}
+      {helpProvider && (
+        <SafetyDrawer
+          providerName={helpProvider}
+          onClose={() => setHelpProvider(null)}
+        />
+      )}
     </div>
   );
 }
@@ -203,9 +228,11 @@ function PageTitle({
 function Overview({
   data,
   save,
+  onHelpProvider,
 }: {
   data: AppData;
   save: (d: AppData) => void;
+  onHelpProvider: (name: string) => void;
 }) {
   const navigate = useNavigate();
   const demo = providerCatalog[0]!;
@@ -246,6 +273,23 @@ function Overview({
       idempotencyKey: key,
     };
     save({ ...data, history: [record, ...data.history] });
+    if (
+      result?.ok &&
+      data.notifications.webEnabled &&
+      data.notifications.actionCompleted &&
+      "Notification" in window &&
+      Notification.permission === "granted"
+    ) {
+      const notificationKey = `${record.providerId}:${record.idempotencyKey}`;
+      if (
+        localStorage.getItem("quotaloop.last-notification") !== notificationKey
+      ) {
+        new Notification("QuotaLoop demo action complete", {
+          body: "The synthetic provider action completed locally.",
+        });
+        localStorage.setItem("quotaloop.last-notification", notificationKey);
+      }
+    }
     setBusy(false);
   };
   return (
@@ -256,7 +300,7 @@ function Overview({
         detail="Your providers, actions, and renewals at a glance."
       />
       <div className="summary-grid">
-        <Metric label="Providers ready" value="3" detail="of 8 configured" />
+        <Metric label="Providers ready" value="1" detail="of 3 demo cards" />
         <Metric
           label="Next reset"
           value="2h 14m"
@@ -265,16 +309,22 @@ function Overview({
         <Metric
           label="Automation"
           value={data.policy.enabled ? "Running" : "Off"}
-          detail={data.policy.enabled ? "Next check 14:20" : "Safe default"}
+          detail={
+            data.policy.enabled ? "Local schedule unavailable" : "Safe default"
+          }
         />
-        <Metric label="Agent" value="Online" detail="This device · local" />
+        <Metric label="Agent" value="Not connected" detail="Standalone web" />
       </div>
       <div className="section-head">
         <div>
           <h3>Provider status</h3>
           <p>Current availability and usage windows</p>
         </div>
-        <button className="button secondary">
+        <button
+          className="button secondary"
+          disabled
+          title="Connect a desktop agent to refresh local providers"
+        >
           <RefreshCw size={15} />
           Refresh all
         </button>
@@ -287,22 +337,25 @@ function Overview({
           session={72}
           weekly={64}
           accent="blue"
+          onHelp={() => onHelpProvider("Codex Demo")}
         />
         <ProviderCard
           name="Claude Code"
-          state="Detected"
-          origin="LOCAL"
+          state="Detect-only"
+          origin="STANDALONE"
           session={null}
           weekly={null}
           accent="orange"
+          onHelp={() => onHelpProvider("Claude Code")}
         />
         <ProviderCard
           name="Gemini CLI"
           state="Unavailable"
-          origin="LOCAL"
+          origin="STANDALONE"
           session={null}
           weekly={null}
           accent="violet"
+          onHelp={() => onHelpProvider("Gemini CLI")}
         />
       </div>
       <div className="two-col">
@@ -368,6 +421,7 @@ function ProviderCard({
   session,
   weekly,
   accent,
+  onHelp,
 }: {
   name: string;
   state: string;
@@ -375,6 +429,7 @@ function ProviderCard({
   session: number | null;
   weekly: number | null;
   accent: string;
+  onHelp?: () => void;
 }) {
   return (
     <article className={`provider-card ${accent}`}>
@@ -400,7 +455,7 @@ function ProviderCard({
       )}
       <footer>
         <span>Updated just now</span>
-        <button aria-label={`Help for ${name}`}>
+        <button aria-label={`Help for ${name}`} onClick={onHelp}>
           <CircleHelp size={15} />
         </button>
       </footer>
@@ -580,7 +635,7 @@ function AutomationPage({
           <ul>
             <li>Maximum {data.policy.maximumRunsPerDay} runs daily</li>
             <li>Duplicate execution guard</li>
-            <li>Hard timeout and output limit</li>
+            <li>Fixed actions only; local agent required</li>
             <li>Stops on stale or unknown quota</li>
           </ul>
         </div>
@@ -691,9 +746,9 @@ function Devices() {
         </div>
         <div>
           <h3>This device</h3>
-          <p>Local connected mode · agent ready</p>
+          <p>Standalone web mode · desktop agent not connected</p>
         </div>
-        <span className="state ready">Online</span>
+        <span className="state unavailable">Not connected</span>
       </div>
       <div className="inline-callout">
         <CircleHelp />
@@ -830,6 +885,38 @@ function SettingsPage({
   data: AppData;
   save: (d: AppData) => void;
 }) {
+  const [notice, setNotice] = useState<string | null>(null);
+  const enableWebNotifications = async () => {
+    if (!("Notification" in window)) {
+      setNotice("Browser notifications are unavailable in this environment.");
+      return;
+    }
+    const permission =
+      Notification.permission === "default"
+        ? await Notification.requestPermission()
+        : Notification.permission;
+    if (permission === "granted")
+      save({
+        ...data,
+        notifications: { ...data.notifications, webEnabled: true },
+      });
+    else {
+      save({
+        ...data,
+        notifications: { ...data.notifications, webEnabled: false },
+      });
+      setNotice(`Browser permission is ${permission}.`);
+    }
+  };
+  const testNotification = () => {
+    if (!("Notification" in window) || Notification.permission !== "granted") {
+      setNotice("Enable browser notifications first.");
+      return;
+    }
+    new Notification("QuotaLoop test notification", {
+      body: "Notifications are configured for this browser.",
+    });
+  };
   return (
     <section>
       <PageTitle
@@ -854,16 +941,32 @@ function SettingsPage({
           </div>
           <SettingRow
             title="Web notifications"
-            detail="Uses browser permission when enabled"
+            detail={
+              data.notifications.webEnabled
+                ? "Enabled for this browser"
+                : "Not enabled"
+            }
           >
-            <Toggle value={false} set={() => {}} />
+            <Toggle
+              value={data.notifications.webEnabled}
+              set={(v) => {
+                if (v) void enableWebNotifications();
+                else
+                  save({
+                    ...data,
+                    notifications: { ...data.notifications, webEnabled: false },
+                  });
+              }}
+            />
           </SettingRow>
-          <SettingRow
-            title="Do not disturb"
-            detail="Mute non-critical notifications overnight"
-          >
-            <Toggle value={true} set={() => {}} />
-          </SettingRow>
+          <button className="button secondary" onClick={testNotification}>
+            Test browser notification
+          </button>
+          {notice && (
+            <p role="status" className="inline-callout">
+              {notice}
+            </p>
+          )}
         </div>
         <div className="panel settings-panel">
           <h3>Safety & privacy</h3>
@@ -919,7 +1022,13 @@ function MobileNav() {
     </nav>
   );
 }
-function SafetyDrawer({ onClose }: { onClose: () => void }) {
+function SafetyDrawer({
+  onClose,
+  providerName,
+}: {
+  onClose: () => void;
+  providerName?: string;
+}) {
   return (
     <div className="drawer-backdrop" onMouseDown={onClose}>
       <aside
@@ -937,20 +1046,23 @@ function SafetyDrawer({ onClose }: { onClose: () => void }) {
           <X />
         </button>
         <ShieldCheck size={30} />
-        <h2>Safety & privacy</h2>
+        <h2>{providerName ? `${providerName} help` : "Safety & privacy"}</h2>
         <p>
-          QuotaLoop reads only the provider information needed for enabled
-          capabilities.
+          {providerName
+            ? "This standalone web app cannot inspect local CLI state. Connect a Desktop Agent to enable verified detection."
+            : "QuotaLoop reads only the provider information needed for enabled capabilities."}
         </p>
-        <h3>Never uploaded</h3>
+        <h3>{providerName ? "Current capability" : "Never uploaded"}</h3>
         <p>
-          Credentials, repository content, raw conversations, and subscription
-          records remain local in this beta.
+          {providerName
+            ? "Demo values are synthetic and labeled. Unavailable values are never estimated."
+            : "Credentials, repository content, raw conversations, and subscription records remain local in this beta."}
         </p>
-        <h3>Automation behavior</h3>
+        <h3>{providerName ? "Connection" : "Automation behavior"}</h3>
         <p>
-          Automation starts off and supports fixed actions only. Unknown or
-          stale quota stops execution.
+          {providerName
+            ? "The Desktop Agent is not connected in standalone web mode."
+            : "Automation starts off and supports fixed actions only. Unknown or stale quota stops execution."}
         </p>
       </aside>
     </div>
