@@ -12,6 +12,8 @@
   },
   "dependencies": {
     "@quotaloop/automation": "workspace:*",
+    "@quotaloop/contracts": "workspace:*",
+    "@quotaloop/core": "workspace:*",
     "@quotaloop/providers": "workspace:*",
     "@tauri-apps/api": "^2.7.0",
     "@tauri-apps/plugin-notification": "^2.3.0",

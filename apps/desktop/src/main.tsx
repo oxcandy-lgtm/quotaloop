@@ -17,6 +17,15 @@ import {
 } from "lucide-react";
 import { MockCodexProvider } from "@quotaloop/providers";
 import { LocalScheduler } from "@quotaloop/automation";
+import type {
+  ExecutionRecord,
+  QuotaAutomationPolicy,
+} from "@quotaloop/contracts";
+import {
+  DesktopAutomationController,
+  loadHistory,
+  loadPolicy,
+} from "./automation-controller";
 import "./styles.css";
 
 type DetectionState =
@@ -31,13 +40,7 @@ type Detection = {
   state: DetectionState;
   version?: string | null;
 };
-type History = {
-  id: string;
-  providerId: string;
-  completedAt: string;
-  outcome: "success" | "failed";
-  reason: string;
-};
+type History = ExecutionRecord;
 const providers = [
   { id: "codex", name: "Codex" },
   { id: "claude-code", name: "Claude Code" },
@@ -57,13 +60,22 @@ function App() {
     () => localStorage.getItem("quotaloop.desktop.paused") === "true",
   );
   const [history, setHistory] = useState<History[]>(
-    () =>
-      JSON.parse(
-        localStorage.getItem("quotaloop.desktop.history") ?? "[]",
-      ) as History[],
+    () => loadHistory() as History[],
   );
   const [notice, setNotice] = useState<string | null>(null);
-  const [automationEnabled] = useState(false);
+  const [policy, setPolicyState] = useState<QuotaAutomationPolicy>(() =>
+    loadPolicy(),
+  );
+  const [notificationsEnabled, setNotificationsEnabled] = useState(
+    () =>
+      (
+        JSON.parse(
+          localStorage.getItem("quotaloop.desktop.notifications") ??
+            '{"enabled":false,"actionCompleted":true}',
+        ) as { enabled: boolean }
+      ).enabled,
+  );
+  const controllerRef = useRef(new DesktopAutomationController(demo));
   const schedulerRef = useRef<LocalScheduler | null>(null);
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -90,6 +102,11 @@ function App() {
       "automation-state-changed",
       (event) => {
         setPaused(event.payload);
+        setPolicyState((current) => {
+          const next = { ...current, paused: event.payload };
+          controllerRef.current.setPolicy(next);
+          return next;
+        });
         localStorage.setItem("quotaloop.desktop.paused", String(event.payload));
       },
     );
@@ -100,7 +117,12 @@ function App() {
   }, [refresh]);
   useEffect(() => {
     const scheduler = new LocalScheduler(async () => {
-      if (automationEnabled && !paused) await refresh();
+      const result = await controllerRef.current.evaluateAndRun();
+      if (result.record) {
+        setHistory(controllerRef.current.records as History[]);
+        await refresh();
+        void notifyCompletion(result.eventKey);
+      }
     }, 60_000);
     schedulerRef.current = scheduler;
     scheduler.start();
@@ -108,7 +130,7 @@ function App() {
       scheduler.stop();
       schedulerRef.current = null;
     };
-  }, [automationEnabled, paused, refresh]);
+  }, [refresh]);
   useEffect(() => {
     const onVisibility = () => {
       if (document.visibilityState === "visible")
@@ -119,32 +141,38 @@ function App() {
   }, []);
   const runDemo = async () => {
     setNotice(null);
-    const result = await demo.runAction({
-      mode: "minimal",
-      idempotencyKey: `codex-demo:minimal:${new Date().toISOString().slice(0, 16)}`,
-      timeoutMs: 30_000,
-    });
-    const item: History = {
-      id: crypto.randomUUID(),
-      providerId: demo.id,
-      completedAt: result.completedAt,
-      outcome: result.ok ? "success" : "failed",
-      reason: result.summary,
-    };
-    const next = [item, ...history].slice(0, 20);
-    setHistory(next);
-    localStorage.setItem("quotaloop.desktop.history", JSON.stringify(next));
+    const result = await controllerRef.current.evaluateAndRun(new Date(), true);
+    if (result.record) {
+      setHistory(controllerRef.current.records as History[]);
+      await notifyCompletion(result.eventKey);
+    } else setNotice(`Demo blocked: ${result.decision.reason}`);
+  };
+  const updatePolicy = (next: QuotaAutomationPolicy) => {
+    controllerRef.current.setPolicy(next);
+    setPolicyState(next);
+  };
+  const notifyCompletion = async (eventKey: string) => {
+    const prefs = JSON.parse(
+      localStorage.getItem("quotaloop.desktop.notifications") ??
+        '{"enabled":false,"actionCompleted":true}',
+    ) as { enabled: boolean; actionCompleted: boolean };
+    if (
+      !prefs.enabled ||
+      !prefs.actionCompleted ||
+      localStorage.getItem("quotaloop.desktop.last-notification-event") ===
+        eventKey
+    )
+      return;
     try {
-      if (
-        (await isPermissionGranted()) &&
-        localStorage.getItem("quotaloop.desktop.last-notification") !== item.id
-      ) {
-        await sendNotification({
-          title: "QuotaLoop demo action complete",
-          body: "Synthetic provider action completed locally.",
-        });
-        localStorage.setItem("quotaloop.desktop.last-notification", item.id);
-      }
+      if (!(await isPermissionGranted())) return;
+      await sendNotification({
+        title: "QuotaLoop demo action complete",
+        body: "Synthetic provider action completed locally.",
+      });
+      localStorage.setItem(
+        "quotaloop.desktop.last-notification-event",
+        eventKey,
+      );
     } catch {
       setNotice("Native notification permission is unavailable.");
     }
@@ -154,6 +182,7 @@ function App() {
       paused: !paused,
     });
     setPaused(next);
+    updatePolicy({ ...policy, paused: next });
     localStorage.setItem("quotaloop.desktop.paused", String(next));
   };
   const testNotification = async () => {
@@ -169,6 +198,14 @@ function App() {
     } catch {
       setNotice("Native notifications are unavailable in this environment.");
     }
+  };
+  const toggleNotifications = () => {
+    const next = !notificationsEnabled;
+    setNotificationsEnabled(next);
+    localStorage.setItem(
+      "quotaloop.desktop.notifications",
+      JSON.stringify({ enabled: next, actionCompleted: true }),
+    );
   };
   const installedCount = Object.values(detections).filter(
     (d) => d.state === "installed",
@@ -228,7 +265,7 @@ function App() {
           <span>AUTOMATION</span>
           <strong>
             <Pause />
-            {paused ? "Paused" : "Off by default"}
+            {paused ? "Paused" : policy.enabled ? "Enabled" : "Off by default"}
           </strong>
         </div>
         <small>Only the synthetic Demo action can run in this beta.</small>
@@ -253,8 +290,13 @@ function App() {
           {paused ? "Resume" : "Pause"}
         </button>
         <button
+          onClick={() => updatePolicy({ ...policy, enabled: !policy.enabled })}
+        >
+          {policy.enabled ? "Disable automation" : "Enable automation"}
+        </button>
+        <button
           className="primary"
-          onClick={() => void invoke("show_main_window")}
+          onClick={() => void invoke("open_dashboard")}
         >
           <Settings />
           Dashboard
@@ -262,6 +304,9 @@ function App() {
         <button onClick={() => void testNotification()}>
           <ShieldCheck />
           Test notification
+        </button>
+        <button onClick={toggleNotifications}>
+          {notificationsEnabled ? "Notifications on" : "Enable notifications"}
         </button>
       </nav>
       <section className="history">

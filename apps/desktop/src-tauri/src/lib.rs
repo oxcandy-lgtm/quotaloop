@@ -150,16 +150,35 @@ fn set_automation_paused(
 
 #[tauri::command]
 fn show_main_window(app: tauri::AppHandle) {
-    toggle_window(&app, true);
+    show_window(&app, "popover");
+}
+
+#[tauri::command]
+fn open_dashboard(app: tauri::AppHandle) {
+    show_window(&app, "dashboard");
+}
+
+#[tauri::command]
+fn get_window_label(window: tauri::Window) -> String {
+    window.label().to_string()
 }
 
 #[tauri::command]
 fn hide_main_window(app: tauri::AppHandle) {
-    toggle_window(&app, false);
+    if let Some(window) = app.get_webview_window("popover") {
+        let _ = window.hide();
+    }
+}
+
+fn show_window(app: &tauri::AppHandle, label: &str) {
+    if let Some(window) = app.get_webview_window(label) {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
 
 fn toggle_window(app: &tauri::AppHandle, force_show: bool) {
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_webview_window("popover") {
         let visible = window.is_visible().unwrap_or(false);
         if force_show || !visible {
             let _ = window.show();
@@ -188,7 +207,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .menu(&open)
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
-            "open" => toggle_window(app, true),
+            "open" => show_window(app, "dashboard"),
             "refresh" => {
                 let _ = app.emit("refresh-providers", ());
             }
@@ -212,7 +231,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 ..
             } = event
             {
-                if let Some(window) = handle.get_webview_window("main") {
+                if let Some(window) = handle.get_webview_window("popover") {
                     let _ = window.set_position(Position::Physical(PhysicalPosition::new(
                         (position.x as i32).saturating_sub(190),
                         position.y as i32 + 8,
@@ -235,6 +254,8 @@ pub fn run() {
             get_automation_paused,
             set_automation_paused,
             show_main_window,
+            open_dashboard,
+            get_window_label,
             hide_main_window,
             detect_provider
         ])

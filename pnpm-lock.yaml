@@ -31,6 +31,12 @@ importers:
       "@quotaloop/automation":
         specifier: workspace:*
         version: link:../../packages/automation
+      "@quotaloop/contracts":
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      "@quotaloop/core":
+        specifier: workspace:*
+        version: link:../../packages/core
       "@quotaloop/providers":
         specifier: workspace:*
         version: link:../../packages/providers
