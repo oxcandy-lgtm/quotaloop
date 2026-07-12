@@ -1,8 +1,21 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { DesktopAutomationController } from "./automation-controller";
+import {
+  DesktopAutomationController,
+  loadHistory,
+  loadPolicy,
+} from "./automation-controller";
+
+const storage = new Map<string, string>();
+Object.defineProperty(globalThis, "localStorage", {
+  value: {
+    clear: () => storage.clear(),
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+  },
+});
 
 beforeEach(() => {
-  /* controller storage is isolated per test process */
+  localStorage.clear();
 });
 
 describe("DesktopAutomationController", () => {
@@ -22,5 +35,27 @@ describe("DesktopAutomationController", () => {
       allowed: false,
       reason: "duplicate_execution",
     });
+  });
+  it("falls back safely for corrupt policy and history", () => {
+    localStorage.setItem("quotaloop.desktop.policy", "{broken");
+    localStorage.setItem(
+      "quotaloop.desktop.history",
+      JSON.stringify([{ nope: true }]),
+    );
+    expect(loadPolicy().enabled).toBe(false);
+    expect(loadHistory()).toEqual([]);
+  });
+  it("atomically blocks simultaneous requests with one key", async () => {
+    const controller = new DesktopAutomationController();
+    controller.setPolicy({ ...controller.currentPolicy, enabled: true });
+    const now = new Date();
+    const [first, second] = await Promise.all([
+      controller.evaluateAndRun(now),
+      controller.evaluateAndRun(now),
+    ]);
+    expect([first.record, second.record].filter(Boolean)).toHaveLength(1);
+    expect([first.decision.reason, second.decision.reason]).toContain(
+      "duplicate_execution",
+    );
   });
 });

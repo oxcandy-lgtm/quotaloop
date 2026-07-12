@@ -197,3 +197,33 @@ button:disabled {
 .history span {
   color: #8491a1;
 }
+.dashboard-surface {
+  min-height: 100vh;
+  padding: 28px;
+  background: #101820;
+  color: #dfe7ef;
+}
+.dashboard-surface header {
+  margin-bottom: 24px;
+}
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.dashboard-card {
+  border: 1px solid #2d3a48;
+  border-radius: 12px;
+  padding: 18px;
+  background: #18212b;
+  min-height: 130px;
+}
+.dashboard-card h2 {
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+.dashboard-card p {
+  color: #9aa8b8;
+  font-size: 12px;
+  line-height: 1.5;
+}

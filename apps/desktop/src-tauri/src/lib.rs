@@ -1,7 +1,6 @@
 use serde::Serialize;
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -9,9 +8,6 @@ use tauri::{Emitter, Manager, PhysicalPosition, Position, WindowEvent};
 
 const DETECTION_TIMEOUT: Duration = Duration::from_secs(2);
 const OUTPUT_LIMIT: usize = 16 * 1024;
-
-#[derive(Default)]
-struct AutomationState(Mutex<bool>);
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -133,17 +129,7 @@ fn get_platform_info() -> String {
 }
 
 #[tauri::command]
-fn get_automation_paused(state: tauri::State<'_, AutomationState>) -> bool {
-    *state.0.lock().unwrap()
-}
-
-#[tauri::command]
-fn set_automation_paused(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AutomationState>,
-    paused: bool,
-) -> bool {
-    *state.0.lock().unwrap() = paused;
+fn set_automation_paused(app: tauri::AppHandle, paused: bool) -> bool {
     let _ = app.emit("automation-state-changed", paused);
     paused
 }
@@ -212,13 +198,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 let _ = app.emit("refresh-providers", ());
             }
             "pause" => {
-                let paused = {
-                    let state = app.state::<AutomationState>();
-                    let mut value = state.0.lock().unwrap();
-                    *value = !*value;
-                    *value
-                };
-                let _ = app.emit("automation-state-changed", paused);
+                let _ = app.emit("automation-pause-requested", ());
             }
             "quit" => app.exit(0),
             _ => {}
@@ -247,11 +227,9 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(AutomationState::default())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             get_platform_info,
-            get_automation_paused,
             set_automation_paused,
             show_main_window,
             open_dashboard,

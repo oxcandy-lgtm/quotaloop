@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import {
   isPermissionGranted,
@@ -26,6 +27,7 @@ import {
   loadHistory,
   loadPolicy,
 } from "./automation-controller";
+import { resolveDesktopSurface } from "./surface";
 import "./styles.css";
 
 type DetectionState =
@@ -48,17 +50,14 @@ const providers = [
   { id: "opencode", name: "OpenCode" },
 ];
 const demo = new MockCodexProvider();
-
-function App() {
+function PopoverApp() {
   const [detections, setDetections] = useState<Record<string, Detection>>(() =>
     Object.fromEntries(
       providers.map((p) => [p.id, { provider_id: p.id, state: "not_checked" }]),
     ),
   );
   const [refreshing, setRefreshing] = useState(false);
-  const [paused, setPaused] = useState(
-    () => localStorage.getItem("quotaloop.desktop.paused") === "true",
-  );
+  const [paused, setPaused] = useState(() => loadPolicy().paused);
   const [history, setHistory] = useState<History[]>(
     () => loadHistory() as History[],
   );
@@ -75,6 +74,9 @@ function App() {
         ) as { enabled: boolean }
       ).enabled,
   );
+  const [notificationPermission, setNotificationPermission] = useState<
+    "unknown" | "granted" | "denied" | "unavailable"
+  >("unknown");
   const controllerRef = useRef(new DesktopAutomationController(demo));
   const schedulerRef = useRef<LocalScheduler | null>(null);
   const refresh = useCallback(async () => {
@@ -95,6 +97,24 @@ function App() {
     );
     setRefreshing(false);
   }, []);
+  const updatePolicy = (next: QuotaAutomationPolicy) => {
+    controllerRef.current.setPolicy(next);
+    setPolicyState(next);
+  };
+  const togglePause = async () => {
+    const next = await invoke<boolean>("set_automation_paused", {
+      paused: !policy.paused,
+    });
+    setPaused(next);
+    updatePolicy({ ...policy, paused: next });
+  };
+  useEffect(() => {
+    void isPermissionGranted()
+      .then((granted) =>
+        setNotificationPermission(granted ? "granted" : "denied"),
+      )
+      .catch(() => setNotificationPermission("unavailable"));
+  }, []);
   useEffect(() => {
     void refresh();
     const refreshUnlisten = listen("refresh-providers", () => void refresh());
@@ -107,12 +127,16 @@ function App() {
           controllerRef.current.setPolicy(next);
           return next;
         });
-        localStorage.setItem("quotaloop.desktop.paused", String(event.payload));
       },
+    );
+    const pauseRequestUnlisten = listen(
+      "automation-pause-requested",
+      () => void togglePause(),
     );
     return () => {
       void refreshUnlisten.then((unlisten) => unlisten());
       void pauseUnlisten.then((unlisten) => unlisten());
+      void pauseRequestUnlisten.then((unlisten) => unlisten());
     };
   }, [refresh]);
   useEffect(() => {
@@ -147,10 +171,6 @@ function App() {
       await notifyCompletion(result.eventKey);
     } else setNotice(`Demo blocked: ${result.decision.reason}`);
   };
-  const updatePolicy = (next: QuotaAutomationPolicy) => {
-    controllerRef.current.setPolicy(next);
-    setPolicyState(next);
-  };
   const notifyCompletion = async (eventKey: string) => {
     const prefs = JSON.parse(
       localStorage.getItem("quotaloop.desktop.notifications") ??
@@ -177,18 +197,11 @@ function App() {
       setNotice("Native notification permission is unavailable.");
     }
   };
-  const togglePause = async () => {
-    const next = await invoke<boolean>("set_automation_paused", {
-      paused: !paused,
-    });
-    setPaused(next);
-    updatePolicy({ ...policy, paused: next });
-    localStorage.setItem("quotaloop.desktop.paused", String(next));
-  };
   const testNotification = async () => {
     try {
       let permission = await isPermissionGranted();
       if (!permission) permission = (await requestPermission()) === "granted";
+      setNotificationPermission(permission ? "granted" : "denied");
       if (permission)
         await sendNotification({
           title: "QuotaLoop test notification",
@@ -196,6 +209,7 @@ function App() {
         });
       else setNotice("Native notification permission was denied.");
     } catch {
+      setNotificationPermission("unavailable");
       setNotice("Native notifications are unavailable in this environment.");
     }
   };
@@ -306,7 +320,9 @@ function App() {
           Test notification
         </button>
         <button onClick={toggleNotifications}>
-          {notificationsEnabled ? "Notifications on" : "Enable notifications"}
+          {notificationsEnabled
+            ? `Notifications: ${notificationPermission}`
+            : "Enable notifications"}
         </button>
       </nav>
       <section className="history">
@@ -325,6 +341,81 @@ function App() {
       </section>
     </main>
   );
+}
+
+function DashboardApp() {
+  return (
+    <main className="dashboard-surface">
+      <header>
+        <div className="mark">
+          <Gauge />
+        </div>
+        <strong>QuotaLoop Dashboard</strong>
+        <span className="online">LOCAL AGENT</span>
+      </header>
+      <section className="dashboard-grid">
+        <section className="dashboard-card">
+          <h2>Overview</h2>
+          <p>Desktop agent is connected. Demo data is synthetic.</p>
+          <strong>Codex Demo · 72% session · 64% weekly</strong>
+        </section>
+        <section className="dashboard-card">
+          <h2>Providers</h2>
+          <p>
+            Codex, Claude Code, Gemini CLI, and OpenCode use local detection
+            only.
+          </p>
+          <p>Quota and execution remain unavailable for non-demo providers.</p>
+        </section>
+        <section className="dashboard-card">
+          <h2>Automation</h2>
+          <p>
+            Only the Mock Codex Demo action can execute. Controls are owned by
+            the tray authority.
+          </p>
+          <button onClick={() => void invoke("show_main_window")}>
+            Open tray controls
+          </button>
+        </section>
+        <section className="dashboard-card">
+          <h2>History</h2>
+          <p>
+            Execution history is persisted by the single desktop authority and
+            shared on next refresh.
+          </p>
+        </section>
+        <section className="dashboard-card">
+          <h2>Signals</h2>
+          <p>No live provider signals are available in this beta.</p>
+        </section>
+        <section className="dashboard-card">
+          <h2>Subscriptions</h2>
+          <p>Subscription data is not connected in this beta.</p>
+        </section>
+        <section className="dashboard-card">
+          <h2>Settings &amp; safety</h2>
+          <p>
+            Notifications, pause state, and synthetic execution stay local. No
+            shell or repository access.
+          </p>
+        </section>
+      </section>
+    </main>
+  );
+}
+
+function App() {
+  let label = "";
+  try {
+    label = getCurrentWindow().label;
+  } catch {
+    /* browser preview */
+  }
+  const surface = resolveDesktopSurface(
+    window.location.search ||
+      (label === "dashboard" ? "?surface=dashboard" : "?surface=popover"),
+  );
+  return surface === "dashboard" ? <DashboardApp /> : <PopoverApp />;
 }
 
 function ProviderRow({

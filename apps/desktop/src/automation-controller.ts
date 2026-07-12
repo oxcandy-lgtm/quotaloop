@@ -5,8 +5,10 @@ import {
 } from "@quotaloop/core";
 import type {
   ExecutionRecord,
+  QuotaProvider,
   QuotaAutomationPolicy,
 } from "@quotaloop/contracts";
+import { automationPolicySchema } from "@quotaloop/contracts";
 import { MockCodexProvider } from "@quotaloop/providers";
 
 export type DesktopHistory = ExecutionRecord;
@@ -27,8 +29,8 @@ const store = {
 export function loadPolicy(): QuotaAutomationPolicy {
   try {
     const value = JSON.parse(store.get(POLICY_KEY) ?? "null");
-    if (value && typeof value === "object")
-      return value as QuotaAutomationPolicy;
+    const parsed = automationPolicySchema.safeParse(value);
+    if (parsed.success) return parsed.data;
   } catch {
     /* use safe defaults */
   }
@@ -48,7 +50,19 @@ export function loadPolicy(): QuotaAutomationPolicy {
 }
 export function loadHistory(): DesktopHistory[] {
   try {
-    return JSON.parse(store.get(HISTORY_KEY) ?? "[]") as DesktopHistory[];
+    const value = JSON.parse(store.get(HISTORY_KEY) ?? "[]");
+    if (!Array.isArray(value)) return [];
+    return value.filter(
+      (record): record is DesktopHistory =>
+        record &&
+        typeof record === "object" &&
+        typeof record.id === "string" &&
+        typeof record.providerId === "string" &&
+        typeof record.startedAt === "string" &&
+        typeof record.completedAt === "string" &&
+        ["success", "blocked", "failed"].includes(record.outcome) &&
+        typeof record.idempotencyKey === "string",
+    );
   } catch {
     return [];
   }
@@ -56,8 +70,9 @@ export function loadHistory(): DesktopHistory[] {
 
 export class DesktopAutomationController {
   private running = false;
+  private readonly inFlightKeys = new Set<string>();
   constructor(
-    private readonly provider = new MockCodexProvider(),
+    private readonly provider: QuotaProvider = new MockCodexProvider(),
     private history: DesktopHistory[] = loadHistory(),
     private policy: QuotaAutomationPolicy = loadPolicy(),
   ) {}
@@ -72,50 +87,74 @@ export class DesktopAutomationController {
     store.set(POLICY_KEY, JSON.stringify(policy));
   }
   async evaluateAndRun(now = new Date(), manualOverride = false) {
-    const quota = await this.provider.getQuotaStatus();
-    const auth = await this.provider.getAuthStatus();
     const key = createIdempotencyKey(
       this.provider.id,
       this.policy.actionMode,
       now,
     );
-    const decision = evaluateAutomation({
-      policy: this.policy,
-      quota,
-      authenticated: auth.authenticated,
-      canRun: true,
-      now,
-      todayRuns: runsOnLocalDay(
-        this.history,
-        now,
-        this.policy.activeHours.timeZone,
-      ),
-      duplicate: this.history.some((record) => record.idempotencyKey === key),
-      running: this.running,
-      manualOverride,
-    });
-    if (!decision.allowed) return { decision, eventKey: key };
-    this.running = true;
-    try {
-      const result = await this.provider.runAction({
-        mode: this.policy.actionMode,
-        idempotencyKey: key,
-        timeoutMs: 30_000,
-      });
-      const record: DesktopHistory = {
-        id: crypto.randomUUID(),
-        providerId: result.providerId,
-        startedAt: now.toISOString(),
-        completedAt: result.completedAt,
-        outcome: result.ok ? "success" : "failed",
-        reason: result.summary,
-        idempotencyKey: key,
+    if (
+      this.inFlightKeys.has(key) ||
+      this.history.some((record) => record.idempotencyKey === key)
+    )
+      return {
+        decision: {
+          allowed: false as const,
+          reason: "duplicate_execution" as const,
+        },
+        eventKey: key,
       };
-      this.history = [record, ...this.history].slice(0, 50);
-      store.set(HISTORY_KEY, JSON.stringify(this.history));
-      return { decision, eventKey: key, record };
+    this.inFlightKeys.add(key);
+    try {
+      const quota = await this.provider.getQuotaStatus();
+      const auth = await this.provider.getAuthStatus();
+      const decision = evaluateAutomation({
+        policy: this.policy,
+        quota,
+        authenticated: auth.authenticated,
+        canRun: true,
+        now,
+        todayRuns: runsOnLocalDay(
+          this.history,
+          now,
+          this.policy.activeHours.timeZone,
+        ),
+        duplicate: false,
+        running: this.running,
+        manualOverride,
+      });
+      if (!decision.allowed) return { decision, eventKey: key };
+      if (!this.provider.runAction)
+        return {
+          decision: {
+            allowed: false as const,
+            reason: "unsupported_action" as const,
+          },
+          eventKey: key,
+        };
+      this.running = true;
+      try {
+        const result = await this.provider.runAction({
+          mode: this.policy.actionMode,
+          idempotencyKey: key,
+          timeoutMs: 30_000,
+        });
+        const record: DesktopHistory = {
+          id: crypto.randomUUID(),
+          providerId: result.providerId,
+          startedAt: now.toISOString(),
+          completedAt: result.completedAt,
+          outcome: result.ok ? "success" : "failed",
+          reason: result.summary,
+          idempotencyKey: key,
+        };
+        this.history = [record, ...this.history].slice(0, 50);
+        store.set(HISTORY_KEY, JSON.stringify(this.history));
+        return { decision, eventKey: key, record };
+      } finally {
+        this.running = false;
+      }
     } finally {
-      this.running = false;
+      this.inFlightKeys.delete(key);
     }
   }
 }
