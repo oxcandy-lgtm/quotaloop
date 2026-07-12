@@ -11,6 +11,13 @@ export interface AppData {
   subscriptions: Subscription[];
   theme: "light" | "dark" | "system";
   onboardingComplete: boolean;
+  notifications: NotificationPreferences;
+}
+export interface NotificationPreferences {
+  webEnabled: boolean;
+  desktopEnabled: boolean;
+  actionCompleted: boolean;
+  testNotification: boolean;
 }
 export class LocalStorageRepository {
   constructor(private readonly key = "quotaloop.v1") {}
