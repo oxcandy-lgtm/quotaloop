@@ -30,6 +30,14 @@ const request = <T>(
   payload,
 });
 
+const waitFor = async (predicate: () => boolean) => {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("authority state did not settle in time");
+};
+
 beforeEach(() => values.clear());
 
 describe("DesktopAuthority transport and lifecycle", () => {
@@ -213,7 +221,7 @@ describe("DesktopAuthority transport and lifecycle", () => {
         }),
       crypto.randomUUID(),
     );
-    await new Promise((resolve) => setTimeout(resolve, 90));
+    await waitFor(() => typeof finish === "function");
     authority.reset();
     finish();
     const result = await pending;
