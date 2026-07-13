@@ -76,6 +76,7 @@ const initial: AppData = {
   })),
   modelLab: { selectedModelIds: [] },
   modelLabHistory: [],
+  lastNotificationEventKey: null,
 };
 const signals: ResetSignal[] = [
   {
@@ -303,13 +304,11 @@ function Overview({
       Notification.permission === "granted"
     ) {
       const notificationKey = `${record.providerId}:${record.idempotencyKey}`;
-      if (
-        localStorage.getItem("quotaloop.last-notification") !== notificationKey
-      ) {
+      if (data.lastNotificationEventKey !== notificationKey) {
         new Notification("QuotaLoop demo action complete", {
           body: "The synthetic provider action completed locally.",
         });
-        localStorage.setItem("quotaloop.last-notification", notificationKey);
+        save({ ...data, lastNotificationEventKey: notificationKey });
       }
     }
     setBusy(false);

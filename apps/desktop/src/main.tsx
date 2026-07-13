@@ -16,19 +16,25 @@ import {
   Settings,
   ShieldCheck,
 } from "lucide-react";
-import { MockCodexProvider } from "@quotaloop/providers";
+import { MockCodexProvider, serviceDefinitions } from "@quotaloop/providers";
 import type {
   AIServicePreference,
+  DesktopRequestEnvelope,
+  DesktopRequestResult,
+  DesktopRequestType,
   DesktopRuntimeSnapshotV2,
   ExecutionRecord,
   QuotaAutomationPolicy,
+  Subscription,
 } from "@quotaloop/contracts";
-import { automationPolicySchema } from "@quotaloop/contracts";
 import { resolveDesktopSurface } from "./surface";
 import { shouldDeliverNotification } from "./notification-controller";
 import { ProviderStatus, HistoryList, SubscriptionList } from "@quotaloop/ui";
 import { DesktopAuthority } from "./desktop-authority";
-import { modelLabViewModel } from "./model-lab/synthetic-catalog";
+import {
+  modelLabViewModel,
+  syntheticCatalog,
+} from "./model-lab/synthetic-catalog";
 import "./styles.css";
 
 type PopoverTab = "quota" | "modelLab";
@@ -54,15 +60,24 @@ const providers = [
 ];
 const demo = new MockCodexProvider();
 const defaultServicePreferences = (): AIServicePreference[] =>
-  providers.map((provider) => ({
-    serviceId: provider.id,
+  serviceDefinitions.map((service) => ({
+    serviceId: service.serviceId,
     enabled: true,
-    visibleInQuota: true,
-    visibleInModelLab: true,
-    allowCatalogAccess: true,
-    allowBenchmarkRequests: provider.id === "codex",
-    favorite: provider.id === "codex",
+    visibleInQuota: service.supportsQuotaSurface,
+    visibleInModelLab: service.supportsModelLab,
+    allowCatalogAccess: service.supportsCatalog,
+    allowBenchmarkRequests: service.supportsBenchmark,
+    favorite: service.integrationLevel === "mock",
   }));
+const makeRequest = <T,>(
+  type: DesktopRequestType,
+  payload: T,
+): DesktopRequestEnvelope<T> => ({
+  schemaVersion: 2,
+  requestId: crypto.randomUUID(),
+  type,
+  payload,
+});
 function PopoverApp() {
   const [detections, setDetections] = useState<Record<string, Detection>>(() =>
     Object.fromEntries(
@@ -77,6 +92,7 @@ function PopoverApp() {
   const [servicePreferences, setServicePreferences] = useState<
     AIServicePreference[]
   >(() => defaultServicePreferences());
+  const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
   const [history, setHistory] = useState<History[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [policy, setPolicyState] = useState<QuotaAutomationPolicy>(() => ({
@@ -122,134 +138,80 @@ function PopoverApp() {
             },
       ),
     );
-    void invoke("broadcast_desktop_snapshot", {
-      snapshot: authorityRef.current.getSnapshot(),
-    });
-    void invoke("broadcast_provider_state", { providers: results });
     setRefreshing(false);
   }, []);
+  const dispatchRequest = async <T,>(type: DesktopRequestType, payload: T) => {
+    const result = await authorityRef.current.handleRequest(
+      makeRequest(type, payload),
+      {
+        refreshProviders: refresh,
+        manualAction: async () => {
+          await performManualAction();
+        },
+        modelLabAction: async () => {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 250));
+        },
+      },
+    );
+    await invoke("broadcast_desktop_ack", { result });
+    return result;
+  };
   const updatePolicy = (next: QuotaAutomationPolicy) => {
-    policyRef.current = next;
-    authorityRef.current.setPolicy(next);
-    setPolicyState(next);
-    void invoke("broadcast_policy_state", { policy: next });
+    void dispatchRequest("automation_policy_requested", next);
   };
   const togglePause = async () => {
-    const next = await invoke<boolean>("set_automation_paused", {
-      paused: !policyRef.current.paused,
-    });
-    updatePolicy({ ...policyRef.current, paused: next });
-  };
-  const resetLocalData = () => {
-    setModelLabStatus("idle");
-    const result = authorityRef.current.reset();
-    policyRef.current = result.policy;
-    setPolicyState(result.policy);
-    setHistory([]);
-    setServicePreferences(defaultServicePreferences());
-    authorityRef.current.setServicePreferences(defaultServicePreferences());
-    setNotice("Local data cleared; automation is OFF.");
-    void invoke("broadcast_policy_state", { policy: result.policy });
-    void invoke("broadcast_history_state", { history: [] });
-    void invoke("broadcast_desktop_snapshot", {
-      snapshot: authorityRef.current.getSnapshot(),
-    });
-    void invoke("broadcast_service_preferences", {
-      preferences: defaultServicePreferences(),
-    });
+    updatePolicy({ ...policyRef.current, paused: !policyRef.current.paused });
   };
   const runModelLab = () => {
     setModelLabStatus("running");
-    void authorityRef.current
-      .runModelLab(
-        async () =>
-          new Promise<void>((resolve) => window.setTimeout(resolve, 250)),
-      )
-      .then((result) => {
-        if (result.accepted) setModelLabStatus("completed");
-        else if (result.reason === "reset_generation")
-          setModelLabStatus("idle");
-        void invoke("broadcast_desktop_snapshot", {
-          snapshot: authorityRef.current.getSnapshot(),
-        });
-      });
+    void dispatchRequest("model_lab_run_requested", {}).then((result) => {
+      if (result.accepted) setModelLabStatus("completed");
+      else if (result.reason !== "execution_in_progress")
+        setModelLabStatus("idle");
+    });
   };
-  const updateServicePreference = (preference: AIServicePreference) => {
-    const next = servicePreferences.map((item) =>
-      item.serviceId === preference.serviceId ? preference : item,
-    );
-    setServicePreferences(next);
-    authorityRef.current.setServicePreferences(next);
-    void invoke("broadcast_service_preferences", { preferences: next });
-  };
-  useEffect(() => {
-    void isPermissionGranted()
-      .then(
-        (granted) => (
-          setNotificationPermission(granted ? "granted" : "denied"),
-          authorityRef.current.setNotificationPermission(
-            granted ? "granted" : "denied",
-          )
-        ),
-      )
-      .catch(() => {
-        setNotificationPermission("unavailable");
-        authorityRef.current.setNotificationPermission("unavailable");
-      });
-  }, []);
   useEffect(() => {
     void refresh();
-    const refreshUnlisten = listen("refresh-providers", () => void refresh());
-    const pauseUnlisten = listen<boolean>(
-      "automation-state-changed",
-      (event) => {
-        setPolicyState((current) => {
-          const next = { ...current, paused: event.payload };
-          policyRef.current = next;
-          authorityRef.current.setPolicy(next);
-          return next;
-        });
-      },
-    );
-    const pauseRequestUnlisten = listen(
-      "automation-pause-requested",
-      () => void togglePause(),
-    );
-    const policyRequestUnlisten = listen<unknown>(
-      "automation-policy-requested",
-      (event) => {
-        const parsed = automationPolicySchema.safeParse(event.payload);
-        if (parsed.success) updatePolicy(parsed.data);
-      },
-    );
-    const clearDataUnlisten = listen(
-      "clear-local-data-requested",
-      resetLocalData,
-    );
-    const modelLabUnlisten = listen("model-lab-run-requested", runModelLab);
-    const servicePreferenceUnlisten = listen<AIServicePreference>(
-      "service-preference-requested",
-      (event) => updateServicePreference(event.payload),
-    );
-    const snapshotRequestUnlisten = listen(
-      "desktop-snapshot-requested",
-      () =>
-        void invoke("broadcast_desktop_snapshot", {
-          snapshot: authorityRef.current.getSnapshot(),
-        }),
-    );
+    const requestUnlisten = listen<unknown>("desktop-requested", (event) => {
+      void authorityRef.current
+        .handleRequest(event.payload, {
+          refreshProviders: refresh,
+          manualAction: performManualAction,
+          modelLabAction: async () =>
+            new Promise<void>((resolve) => window.setTimeout(resolve, 250)),
+        })
+        .then((result) => invoke("broadcast_desktop_ack", { result }));
+    });
+    const trayRefreshUnlisten = listen("tray-refresh-requested", () => {
+      void dispatchRequest("refresh_providers_requested", {});
+    });
+    const trayPauseUnlisten = listen("tray-pause-requested", () => {
+      void dispatchRequest("automation_policy_requested", {
+        ...policyRef.current,
+        paused: !policyRef.current.paused,
+      });
+    });
     return () => {
-      void refreshUnlisten.then((unlisten) => unlisten());
-      void pauseUnlisten.then((unlisten) => unlisten());
-      void pauseRequestUnlisten.then((unlisten) => unlisten());
-      void policyRequestUnlisten.then((unlisten) => unlisten());
-      void clearDataUnlisten.then((unlisten) => unlisten());
-      void modelLabUnlisten.then((unlisten) => unlisten());
-      void servicePreferenceUnlisten.then((unlisten) => unlisten());
-      void snapshotRequestUnlisten.then((unlisten) => unlisten());
+      void requestUnlisten.then((unlisten) => unlisten());
+      void trayRefreshUnlisten.then((unlisten) => unlisten());
+      void trayPauseUnlisten.then((unlisten) => unlisten());
     };
   }, [refresh]);
   useEffect(() => {
+    authorityRef.current.setOnSnapshot(() => {
+      const snapshot = authorityRef.current.getSnapshot();
+      setPolicyState(snapshot.persistent.automationPolicy);
+      policyRef.current = snapshot.persistent.automationPolicy;
+      setHistory(snapshot.persistent.executionHistory);
+      setServicePreferences(snapshot.persistent.preferences.aiServices);
+      setSelectedModelIds(
+        snapshot.persistent.modelLabPreferences.selectedModelIds,
+      );
+      setNotificationsEnabled(
+        snapshot.persistent.preferences.notifications.enabled,
+      );
+      void invoke("broadcast_desktop_snapshot", { snapshot });
+    });
     void authorityRef.current.hydrate().then(() => {
       const hydrated = authorityRef.current.getSnapshot();
       setPolicyState(hydrated.persistent.automationPolicy);
@@ -260,24 +222,18 @@ function PopoverApp() {
           ? hydrated.persistent.preferences.aiServices
           : defaultServicePreferences(),
       );
-      authorityRef.current.setServicePreferences(
-        hydrated.persistent.preferences.aiServices,
+      setSelectedModelIds(
+        hydrated.persistent.modelLabPreferences.selectedModelIds,
+      );
+      setNotificationsEnabled(
+        hydrated.persistent.preferences.notifications.enabled,
       );
       authorityRef.current.setOnRecord(async (eventKey) => {
         setHistory(controllerRef.current.records as History[]);
-        void invoke("broadcast_history_state", {
-          history: controllerRef.current.records,
-        });
-        void invoke("broadcast_desktop_snapshot", {
-          snapshot: authorityRef.current.getSnapshot(),
-        });
         await refresh();
         void notifyCompletion(eventKey);
       });
       authorityRef.current.start();
-      void invoke("broadcast_desktop_snapshot", {
-        snapshot: authorityRef.current.getSnapshot(),
-      });
     });
     return () => {
       authorityRef.current.stop();
@@ -290,19 +246,16 @@ function PopoverApp() {
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, []);
-  const runDemo = async () => {
+  const performManualAction = async () => {
     setNotice(null);
     const result = await authorityRef.current.runManual(new Date());
     if (result.record) {
       setHistory(controllerRef.current.records as History[]);
-      void invoke("broadcast_history_state", {
-        history: controllerRef.current.records,
-      });
-      void invoke("broadcast_desktop_snapshot", {
-        snapshot: authorityRef.current.getSnapshot(),
-      });
       await notifyCompletion(result.eventKey);
     } else setNotice(`Demo blocked: ${result.decision.reason}`);
+  };
+  const runDemo = () => {
+    void dispatchRequest("manual_action_requested", {});
   };
   const notifyCompletion = async (eventKey: string) => {
     const prefs =
@@ -348,13 +301,9 @@ function PopoverApp() {
   };
   const toggleNotifications = () => {
     const next = !notificationsEnabled;
-    setNotificationsEnabled(next);
-    authorityRef.current.setNotificationPreferences({
+    void dispatchRequest("notification_preference_requested", {
       enabled: next,
       actionCompleted: true,
-    });
-    void invoke("broadcast_desktop_snapshot", {
-      snapshot: authorityRef.current.getSnapshot(),
     });
   };
   const tabRefs = useRef<Record<PopoverTab, HTMLButtonElement | null>>({
@@ -420,7 +369,21 @@ function PopoverApp() {
           role="tabpanel"
           aria-labelledby="tab-model-lab"
         >
-          <ModelLabPopover status={modelLabStatus} />
+          <ModelLabPopover
+            status={modelLabStatus}
+            onRun={runModelLab}
+            selectedModelIds={selectedModelIds}
+            onToggleModel={(modelId) => {
+              const next = selectedModelIds.includes(modelId)
+                ? selectedModelIds.filter((id) => id !== modelId)
+                : [...selectedModelIds, modelId];
+              void dispatchRequest("model_lab_selection_requested", {
+                selectedModelIds: next,
+              }).then((result) => {
+                if (result.accepted) setSelectedModelIds(next);
+              });
+            }}
+          />
         </div>
       ) : (
         <div id="panel-quota" role="tabpanel" aria-labelledby="tab-quota">
@@ -545,8 +508,14 @@ function PopoverApp() {
 
 function ModelLabPopover({
   status,
+  onRun,
+  selectedModelIds,
+  onToggleModel,
 }: {
   status: "idle" | "running" | "completed";
+  onRun: () => void;
+  selectedModelIds: string[];
+  onToggleModel: (modelId: string) => void;
 }) {
   const viewModel = modelLabViewModel();
   return (
@@ -579,6 +548,19 @@ function ModelLabPopover({
           </p>
         ))}
       </section>
+      <fieldset className="model-selection">
+        <legend>Models to benchmark</legend>
+        {syntheticCatalog.slice(0, 8).map((model) => (
+          <label key={model.id}>
+            <input
+              type="checkbox"
+              checked={selectedModelIds.includes(model.id)}
+              onChange={() => onToggleModel(model.id)}
+            />
+            {model.name} <small>Demo / Synthetic</small>
+          </label>
+        ))}
+      </fieldset>
       <p className="model-lab-status">
         {status === "running"
           ? "Synthetic benchmark running…"
@@ -586,10 +568,7 @@ function ModelLabPopover({
             ? "Synthetic benchmark complete."
             : "Ready for a manual run."}
       </p>
-      <button
-        className="primary"
-        onClick={() => void invoke("request_model_lab_run")}
-      >
+      <button className="primary" onClick={onRun}>
         Run synthetic benchmark
       </button>
       <button
@@ -610,32 +589,111 @@ function DashboardApp() {
     AIServicePreference[]
   >(() => defaultServicePreferences());
   const [refreshing, setRefreshing] = useState(false);
+  const [subscriptionDraft, setSubscriptionDraft] = useState<Subscription>({
+    id: "",
+    providerId: "codex-demo",
+    plan: "Demo plan",
+    monthlyPrice: 0,
+    currency: "USD",
+    renewalDate: new Date().toISOString().slice(0, 10),
+    autoRenew: false,
+    notes: "Synthetic local subscription",
+  });
+  const [editingSubscriptionId, setEditingSubscriptionId] = useState<
+    string | null
+  >(null);
+  const [authorityUnavailable, setAuthorityUnavailable] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const pendingRequests = useRef(new Map<string, number>());
+  const latestRevision = useRef(-1);
+  const request = useCallback(<T,>(type: DesktopRequestType, payload: T) => {
+    const envelope = makeRequest(type, payload);
+    setFeedback(null);
+    const timeout = window.setTimeout(() => {
+      pendingRequests.current.delete(envelope.requestId);
+      setAuthorityUnavailable(true);
+      setFeedback("Desktop authority did not respond. Retry.");
+    }, 4000);
+    pendingRequests.current.set(envelope.requestId, timeout);
+    void invoke<boolean>("request_desktop", { envelope }).then((sent) => {
+      if (!sent) {
+        window.clearTimeout(timeout);
+        pendingRequests.current.delete(envelope.requestId);
+        setAuthorityUnavailable(true);
+        setFeedback("Desktop authority is unavailable.");
+      }
+    });
+    return envelope.requestId;
+  }, []);
   useEffect(() => {
     const listeners = Promise.all([
       listen<string>("section-selected", (event) => setSection(event.payload)),
       listen<DesktopRuntimeSnapshotV2>("desktop-snapshot", (event) => {
+        if (event.payload.revision < latestRevision.current) return;
+        latestRevision.current = event.payload.revision;
+        setAuthorityUnavailable(false);
         setSnapshot(event.payload);
         setServicePreferences(event.payload.persistent.preferences.aiServices);
       }),
+      listen<DesktopRequestResult>("desktop-ack", (event) => {
+        const timeout = pendingRequests.current.get(event.payload.requestId);
+        if (timeout !== undefined) window.clearTimeout(timeout);
+        pendingRequests.current.delete(event.payload.requestId);
+        setFeedback(
+          event.payload.accepted
+            ? "Saved"
+            : `Request rejected: ${event.payload.reason ?? "invalid request"}`,
+        );
+        if (!event.payload.accepted) return;
+        setAuthorityUnavailable(false);
+      }),
     ]);
-    void listeners.then(() => invoke("request_desktop_snapshot"));
+    void listeners.then(() => request("desktop_snapshot_requested", {}));
     return () => {
+      for (const timeout of pendingRequests.current.values())
+        window.clearTimeout(timeout);
+      pendingRequests.current.clear();
       void listeners.then((items) => items.forEach((item) => item()));
     };
-  }, []);
+  }, [request]);
+  const retry = () => {
+    setAuthorityUnavailable(false);
+    request("desktop_snapshot_requested", {});
+  };
   const refresh = async () => {
     setRefreshing(true);
-    await invoke("request_refresh_providers");
+    request("refresh_providers_requested", {});
     setRefreshing(false);
   };
   const updatePolicy = (next: QuotaAutomationPolicy) =>
-    void invoke("request_policy_update", { policy: next });
+    request("automation_policy_requested", next);
   const updateServicePreference = (preference: AIServicePreference) =>
-    void invoke("request_service_preference", { preference });
+    request("service_preference_requested", preference);
+  const runModelLab = () => request("model_lab_run_requested", {});
+  const subscriptions = snapshot?.persistent.subscriptions ?? [];
+  const addSubscription = () => {
+    const subscription = {
+      ...subscriptionDraft,
+      id: subscriptionDraft.id || crypto.randomUUID(),
+    };
+    request("subscription_requested", {
+      operation: editingSubscriptionId ? "update" : "add",
+      subscription,
+    });
+    setSubscriptionDraft((current) => ({ ...current, id: "" }));
+    setEditingSubscriptionId(null);
+  };
   if (!snapshot?.hydrated)
     return (
       <main className="dashboard-surface">
-        <p role="status">Loading Desktop authority…</p>
+        {authorityUnavailable ? (
+          <div role="alert">
+            <p>Desktop authority unavailable.</p>
+            <button onClick={retry}>Retry</button>
+          </div>
+        ) : (
+          <p role="status">Loading Desktop authority…</p>
+        )}
       </main>
     );
   const policy = snapshot.persistent.automationPolicy;
@@ -699,9 +757,31 @@ function DashboardApp() {
             Runtime: {snapshot.modelLabRunState.status} ·{" "}
             {snapshot.modelLabRunState.progress}%
           </p>
-          <button onClick={() => void invoke("request_model_lab_run")}>
-            Run synthetic benchmark
-          </button>
+          <button onClick={runModelLab}>Run synthetic benchmark</button>
+          <fieldset className="model-selection">
+            <legend>Select synthetic models</legend>
+            {syntheticCatalog.map((model) => (
+              <label key={model.id}>
+                <input
+                  type="checkbox"
+                  checked={snapshot.persistent.modelLabPreferences.selectedModelIds.includes(
+                    model.id,
+                  )}
+                  onChange={() => {
+                    const current =
+                      snapshot.persistent.modelLabPreferences.selectedModelIds;
+                    const selectedModelIds = current.includes(model.id)
+                      ? current.filter((id) => id !== model.id)
+                      : [...current, model.id];
+                    request("model_lab_selection_requested", {
+                      selectedModelIds,
+                    });
+                  }}
+                />
+                {model.name} <small>Demo / Synthetic</small>
+              </label>
+            ))}
+          </fieldset>
         </section>
         <section className="dashboard-card" data-section="providers">
           <h2>Providers</h2>
@@ -778,10 +858,100 @@ function DashboardApp() {
         <section className="dashboard-card" data-section="subscriptions">
           <h2>Subscriptions</h2>
           <SubscriptionList>
-            <p>
-              Local subscription model is empty in this beta; cloud billing is
-              disabled.
-            </p>
+            {subscriptions.map((subscription) => (
+              <div key={subscription.id} className="subscription-row">
+                <strong>{subscription.plan}</strong>
+                <span>
+                  {subscription.providerId} · {subscription.currency}{" "}
+                  {subscription.monthlyPrice}
+                </span>
+                <button
+                  onClick={() => {
+                    setSubscriptionDraft(subscription);
+                    setEditingSubscriptionId(subscription.id);
+                  }}
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={() =>
+                    request("subscription_requested", {
+                      operation: "remove",
+                      subscriptionId: subscription.id,
+                    })
+                  }
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+            <label>
+              Provider{" "}
+              <input
+                value={subscriptionDraft.providerId}
+                onChange={(event) =>
+                  setSubscriptionDraft({
+                    ...subscriptionDraft,
+                    providerId: event.target.value,
+                  })
+                }
+              />
+            </label>
+            <label>
+              Plan{" "}
+              <input
+                value={subscriptionDraft.plan}
+                onChange={(event) =>
+                  setSubscriptionDraft({
+                    ...subscriptionDraft,
+                    plan: event.target.value,
+                  })
+                }
+              />
+            </label>
+            <label>
+              Monthly price{" "}
+              <input
+                type="number"
+                min="0"
+                value={subscriptionDraft.monthlyPrice}
+                onChange={(event) =>
+                  setSubscriptionDraft({
+                    ...subscriptionDraft,
+                    monthlyPrice: Number(event.target.value),
+                  })
+                }
+              />
+            </label>
+            <label>
+              Renewal date{" "}
+              <input
+                type="date"
+                value={subscriptionDraft.renewalDate}
+                onChange={(event) =>
+                  setSubscriptionDraft({
+                    ...subscriptionDraft,
+                    renewalDate: event.target.value,
+                  })
+                }
+              />
+            </label>
+            <label>
+              Auto renew{" "}
+              <input
+                type="checkbox"
+                checked={subscriptionDraft.autoRenew}
+                onChange={(event) =>
+                  setSubscriptionDraft({
+                    ...subscriptionDraft,
+                    autoRenew: event.target.checked,
+                  })
+                }
+              />
+            </label>
+            <button onClick={addSubscription}>
+              {editingSubscriptionId ? "Save subscription" : "Add subscription"}
+            </button>
           </SubscriptionList>
         </section>
         <section className="dashboard-card" data-section="settings">
@@ -790,29 +960,44 @@ function DashboardApp() {
             Notifications, pause state, and synthetic execution stay local. No
             shell or repository access.
           </p>
-          <button onClick={() => void invoke("request_clear_local_data")}>
+          <button onClick={() => request("clear_local_data_requested", {})}>
             Clear local data
           </button>
           <h3>AI Services</h3>
           {servicePreferences.map((preference) => (
-            <label key={preference.serviceId} className="service-toggle">
-              <span>{preference.serviceId}</span>
-              <input
-                type="checkbox"
-                checked={preference.enabled}
-                onChange={(event) =>
-                  updateServicePreference({
-                    ...preference,
-                    enabled: event.target.checked,
-                  })
-                }
-              />
-            </label>
+            <fieldset key={preference.serviceId} className="service-toggle">
+              <legend>{preference.serviceId}</legend>
+              {(
+                [
+                  ["enabled", "Enabled"],
+                  ["visibleInQuota", "Quota"],
+                  ["visibleInModelLab", "Model Lab"],
+                  ["allowCatalogAccess", "Catalog"],
+                  ["allowBenchmarkRequests", "Benchmark"],
+                  ["favorite", "Favorite"],
+                ] as const
+              ).map(([key, label]) => (
+                <label key={key}>
+                  {label}
+                  <input
+                    type="checkbox"
+                    checked={preference[key]}
+                    onChange={(event) =>
+                      updateServicePreference({
+                        ...preference,
+                        [key]: event.target.checked,
+                      })
+                    }
+                  />
+                </label>
+              ))}
+            </fieldset>
           ))}
           <p>
             Credential support unavailable. Secure storage is not connected in
             this build.
           </p>
+          {feedback && <p role="status">{feedback}</p>}
         </section>
       </section>
     </main>

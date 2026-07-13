@@ -8,6 +8,12 @@
 }
 body {
   margin: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+#root {
+  max-width: 100%;
+  overflow-x: hidden;
 }
 .popover {
   width: 380px;
@@ -267,6 +273,9 @@ button:disabled {
   font-weight: 400;
 }
 .dashboard-surface {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
   min-height: 100vh;
   padding: 28px;
   background: #101820;

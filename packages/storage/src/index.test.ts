@@ -38,6 +38,7 @@ const fallback: AppData = {
   credentials: [],
   modelLab: { selectedModelIds: [] },
   modelLabHistory: [],
+  lastNotificationEventKey: null,
 };
 beforeEach(() => values.clear());
 describe("AppData v2 migration", () => {
@@ -79,5 +80,34 @@ describe("AppData v2 migration", () => {
         favorite: false,
       },
     ]);
+  });
+  it("falls back per slice and filters malformed records without erasing siblings", () => {
+    values.set(
+      "quotaloop.v1",
+      JSON.stringify({
+        policy: { broken: true },
+        history: [
+          {
+            id: "valid",
+            providerId: "codex",
+            startedAt: "2030-01-01T00:00:00.000Z",
+            completedAt: "2030-01-01T00:01:00.000Z",
+            outcome: "success",
+            reason: "ok",
+            idempotencyKey: "key",
+          },
+          { malformed: true },
+        ],
+        theme: "dark",
+        notifications: { webEnabled: true },
+        modelLab: { selectedModelIds: ["not-a-demo-model"] },
+      }),
+    );
+    const result = new LocalStorageRepository().load(fallback);
+    expect(result.policy.enabled).toBe(false);
+    expect(result.history).toHaveLength(1);
+    expect(result.theme).toBe("dark");
+    expect(result.notifications).toEqual(fallback.notifications);
+    expect(result.modelLab.selectedModelIds).toEqual([]);
   });
 });

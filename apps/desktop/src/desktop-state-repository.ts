@@ -34,6 +34,17 @@ const isSubscription = (value: unknown) => {
 };
 const isServicePreference = (value: unknown) =>
   isRecord(value) &&
+  Object.keys(value).every((key) =>
+    [
+      "serviceId",
+      "enabled",
+      "visibleInQuota",
+      "visibleInModelLab",
+      "allowCatalogAccess",
+      "allowBenchmarkRequests",
+      "favorite",
+    ].includes(key),
+  ) &&
   [
     "serviceId",
     "enabled",
@@ -45,34 +56,58 @@ const isServicePreference = (value: unknown) =>
   ].every(
     (key) => typeof value[key] === (key === "serviceId" ? "string" : "boolean"),
   );
-const isPreferences = (value: unknown) => {
+const isCredentialMetadata = (value: unknown) => {
+  if (!isRecord(value)) return false;
   if (
-    !isRecord(value) ||
-    !["light", "dark", "system"].includes(String(value.theme))
-  )
-    return false;
-  if (
-    !Array.isArray(value.aiServices) ||
-    !value.aiServices.every(isServicePreference)
-  )
-    return false;
-  if (
-    !Array.isArray(value.credentials) ||
-    !value.credentials.every(
-      (c) =>
-        isRecord(c) &&
-        typeof c.providerId === "string" &&
-        ["not_configured", "configured", "unavailable"].includes(
-          String(c.status),
-        ),
+    Object.keys(value).some(
+      (key) => !["providerId", "status", "updatedAt"].includes(key),
     )
   )
     return false;
   return (
-    isRecord(value.notifications) &&
-    typeof value.notifications.enabled === "boolean" &&
-    typeof value.notifications.actionCompleted === "boolean"
+    typeof value.providerId === "string" &&
+    ["not_configured", "configured", "unavailable"].includes(
+      String(value.status),
+    ) &&
+    (value.updatedAt === undefined || typeof value.updatedAt === "string")
   );
+};
+const parsePreferences = (
+  value: unknown,
+  fallback: DesktopPersistentStateV2["preferences"],
+) => {
+  const source = isRecord(value) ? value : {};
+  const notifications = isRecord(source.notifications)
+    ? {
+        enabled:
+          typeof source.notifications.enabled === "boolean"
+            ? source.notifications.enabled
+            : fallback.notifications.enabled,
+        actionCompleted:
+          typeof source.notifications.actionCompleted === "boolean"
+            ? source.notifications.actionCompleted
+            : fallback.notifications.actionCompleted,
+      }
+    : fallback.notifications;
+  return {
+    theme:
+      source.theme === "light" ||
+      source.theme === "dark" ||
+      source.theme === "system"
+        ? source.theme
+        : fallback.theme,
+    aiServices: Array.isArray(source.aiServices)
+      ? (source.aiServices.filter(
+          isServicePreference,
+        ) as DesktopPersistentStateV2["preferences"]["aiServices"])
+      : fallback.aiServices,
+    credentials: Array.isArray(source.credentials)
+      ? (source.credentials.filter(
+          isCredentialMetadata,
+        ) as DesktopPersistentStateV2["preferences"]["credentials"])
+      : fallback.credentials,
+    notifications,
+  };
 };
 export function defaultDesktopState(): DesktopPersistentStateV2 {
   return {
@@ -88,6 +123,7 @@ export function defaultDesktopState(): DesktopPersistentStateV2 {
     modelLabPreferences: { selectedModelIds: [] },
     modelLabHistory: [],
     subscriptions: [],
+    lastNotificationEventKey: null,
   };
 }
 export class DesktopStateRepository {
@@ -107,11 +143,11 @@ export class DesktopStateRepository {
         ).success
           ? automationPolicySchema.parse(source.automationPolicy)
           : fallback.automationPolicy,
-        executionHistory:
-          Array.isArray(source.executionHistory) &&
-          source.executionHistory.every(isExecutionRecord)
-            ? (source.executionHistory as DesktopPersistentStateV2["executionHistory"])
-            : fallback.executionHistory,
+        executionHistory: Array.isArray(source.executionHistory)
+          ? (source.executionHistory.filter(
+              isExecutionRecord,
+            ) as DesktopPersistentStateV2["executionHistory"])
+          : fallback.executionHistory,
         modelLabPreferences:
           isRecord(source.modelLabPreferences) &&
           Array.isArray(source.modelLabPreferences.selectedModelIds) &&
@@ -120,31 +156,21 @@ export class DesktopStateRepository {
           )
             ? (source.modelLabPreferences as unknown as DesktopPersistentStateV2["modelLabPreferences"])
             : fallback.modelLabPreferences,
-        modelLabHistory:
-          Array.isArray(source.modelLabHistory) &&
-          source.modelLabHistory.every(
-            (item) =>
-              isRecord(item) &&
-              typeof item.id === "string" &&
-              Array.isArray(item.modelIds) &&
-              item.modelIds.every((id) => typeof id === "string") &&
-              typeof item.completedAt === "string" &&
-              ["success", "failed"].includes(String(item.outcome)) &&
-              isRecord(item.results) &&
-              Object.values(item.results).every(
-                (score) => typeof score === "number",
-              ),
-          )
-            ? (source.modelLabHistory as DesktopPersistentStateV2["modelLabHistory"])
-            : fallback.modelLabHistory,
-        subscriptions:
-          Array.isArray(source.subscriptions) &&
-          source.subscriptions.every(isSubscription)
-            ? (source.subscriptions as DesktopPersistentStateV2["subscriptions"])
-            : fallback.subscriptions,
-        preferences: isPreferences(source.preferences)
-          ? (source.preferences as DesktopPersistentStateV2["preferences"])
-          : fallback.preferences,
+        modelLabHistory: Array.isArray(source.modelLabHistory)
+          ? (source.modelLabHistory.filter(
+              isModelLabHistory,
+            ) as DesktopPersistentStateV2["modelLabHistory"])
+          : fallback.modelLabHistory,
+        subscriptions: Array.isArray(source.subscriptions)
+          ? (source.subscriptions.filter(
+              isSubscription,
+            ) as DesktopPersistentStateV2["subscriptions"])
+          : fallback.subscriptions,
+        lastNotificationEventKey:
+          typeof source.lastNotificationEventKey === "string"
+            ? source.lastNotificationEventKey
+            : null,
+        preferences: parsePreferences(source.preferences, fallback.preferences),
       };
     } catch {
       return fallback;
@@ -157,3 +183,12 @@ export class DesktopStateRepository {
     localStorage.removeItem(KEY);
   }
 }
+const isModelLabHistory = (item: unknown) =>
+  isRecord(item) &&
+  typeof item.id === "string" &&
+  Array.isArray(item.modelIds) &&
+  item.modelIds.every((id) => typeof id === "string") &&
+  typeof item.completedAt === "string" &&
+  ["success", "failed"].includes(String(item.outcome)) &&
+  isRecord(item.results) &&
+  Object.values(item.results).every((score) => typeof score === "number");
