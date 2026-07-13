@@ -95,7 +95,10 @@ export class DesktopAutomationController {
     this.policy = policy;
     store.set(POLICY_KEY, JSON.stringify(policy));
   }
-  hydrateState(policy: QuotaAutomationPolicy, history: DesktopHistory[]) { this.policy = policy; this.history = history; }
+  hydrateState(policy: QuotaAutomationPolicy, history: DesktopHistory[]) {
+    this.policy = policy;
+    this.history = history;
+  }
   resetToSafeDefaults(): {
     policy: QuotaAutomationPolicy;
     history: DesktopHistory[];

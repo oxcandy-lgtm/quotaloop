@@ -357,7 +357,7 @@ function PopoverApp() {
       snapshot: authorityRef.current.getSnapshot(),
     });
   };
-  const moveTab = (event: React.KeyboardEvent, tab: PopoverTab) => {
+  const moveTab = (event: React.KeyboardEvent) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
     const next =
@@ -377,7 +377,7 @@ function PopoverApp() {
             id="tab-quota"
             aria-controls="panel-quota"
             tabIndex={activeTab === "quota" ? 0 : -1}
-            onKeyDown={(event) => moveTab(event, "quota")}
+            onKeyDown={moveTab}
             onClick={() => setActiveTab("quota")}
           >
             QUOTA
@@ -389,7 +389,7 @@ function PopoverApp() {
             id="tab-model-lab"
             aria-controls="panel-model-lab"
             tabIndex={activeTab === "modelLab" ? 0 : -1}
-            onKeyDown={(event) => moveTab(event, "modelLab")}
+            onKeyDown={moveTab}
             onClick={() => setActiveTab("modelLab")}
           >
             MODEL LAB
