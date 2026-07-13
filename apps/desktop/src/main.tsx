@@ -657,13 +657,19 @@ function ModelLabPopover({
   const viewModel = modelLabViewModel();
   const liveCatalog = openrouter?.catalog;
   const liveRun = openrouter?.benchmarkRun;
-  const [liveSelectedModelIds, setLiveSelectedModelIds] = useState<string[]>([]);
+  const [liveSelectedModelIds, setLiveSelectedModelIds] = useState<string[]>(
+    [],
+  );
   useEffect(() => {
     if (!liveCatalog) return;
     setLiveSelectedModelIds((current) => {
-      const eligible = new Set(liveCatalog.eligibleModels.map((model) => model.id));
+      const eligible = new Set(
+        liveCatalog.eligibleModels.map((model) => model.id),
+      );
       const retained = current.filter((id) => eligible.has(id));
-      return retained.length ? retained : liveCatalog.eligibleModels.map((model) => model.id);
+      return retained.length
+        ? retained
+        : liveCatalog.eligibleModels.map((model) => model.id);
     });
   }, [liveCatalog]);
   return (
@@ -735,11 +741,7 @@ function ModelLabPopover({
           </p>
           <button
             className="primary"
-            onClick={() =>
-              onRunOpenRouter(
-                liveSelectedModelIds,
-              )
-            }
+            onClick={() => onRunOpenRouter(liveSelectedModelIds)}
             disabled={!liveCatalog || liveRun?.status === "running"}
           >
             Run all free models
