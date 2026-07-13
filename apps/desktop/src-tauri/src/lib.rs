@@ -1,14 +1,20 @@
 use serde::Serialize;
 use std::io::Read;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, Manager, PhysicalPosition, Position, WindowEvent};
+use tauri::{Emitter, Manager, PhysicalPosition, Position, State, WindowEvent};
 
 const DETECTION_TIMEOUT: Duration = Duration::from_secs(2);
 const OUTPUT_LIMIT: usize = 16 * 1024;
 pub const DETECTABLE_PROVIDER_IDS: &[&str] = &["codex", "claude-code", "gemini-cli", "opencode"];
+
+#[derive(Default)]
+struct PopoverBehaviorState {
+    auto_hide_suppressed: AtomicBool,
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -153,16 +159,55 @@ fn show_main_window(app: tauri::AppHandle) {
     show_window(&app, "popover");
 }
 
+fn validated_dashboard_section(section: Option<&str>) -> &'static str {
+    match section.unwrap_or("overview") {
+        "overview" => "overview",
+        "providers" => "providers",
+        "model_lab" => "model_lab",
+        "automation" => "automation",
+        "history" => "history",
+        "signals" => "signals",
+        "subscriptions" => "subscriptions",
+        "settings" => "settings",
+        _ => "overview",
+    }
+}
+
+fn set_auto_hide_suppressed(app: &tauri::AppHandle, suppressed: bool) {
+    if let Some(state) = app.try_state::<PopoverBehaviorState>() {
+        state
+            .auto_hide_suppressed
+            .store(suppressed, Ordering::SeqCst);
+    }
+}
+
+fn should_suppress_auto_hide_for_dashboard_section(section: Option<&str>) -> bool {
+    validated_dashboard_section(section) == "settings"
+}
+
+fn open_dashboard_window(app: &tauri::AppHandle, section: Option<&str>) {
+    let selected = validated_dashboard_section(section);
+    set_auto_hide_suppressed(
+        app,
+        should_suppress_auto_hide_for_dashboard_section(section),
+    );
+    show_window(app, "dashboard");
+    let _ = app.emit_to("dashboard", "section-selected", selected);
+}
+
 #[tauri::command]
 fn open_dashboard(app: tauri::AppHandle, section: Option<String>) {
-    show_window(&app, "dashboard");
-    let requested = section.unwrap_or_else(|| "overview".into());
-    let selected = match requested.as_str() {
-        "overview" | "providers" | "model_lab" | "automation" | "history" | "signals"
-        | "subscriptions" | "settings" => requested,
-        _ => "overview".into(),
-    };
-    let _ = app.emit_to("dashboard", "section-selected", selected);
+    open_dashboard_window(&app, section.as_deref());
+}
+
+#[tauri::command]
+fn set_dashboard_section(state: State<'_, PopoverBehaviorState>, section: String) -> String {
+    let selected = validated_dashboard_section(Some(section.as_str()));
+    state.auto_hide_suppressed.store(
+        should_suppress_auto_hide_for_dashboard_section(Some(section.as_str())),
+        Ordering::SeqCst,
+    );
+    selected.to_string()
 }
 
 #[tauri::command]
@@ -196,6 +241,15 @@ fn toggle_window(app: &tauri::AppHandle, force_show: bool) {
     }
 }
 
+fn should_auto_hide_on_focus_loss(
+    is_macos: bool,
+    window_label: &str,
+    focused: bool,
+    auto_hide_suppressed: bool,
+) -> bool {
+    is_macos && !focused && window_label == "popover" && !auto_hide_suppressed
+}
+
 fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let open = MenuBuilder::new(app)
         .text("open", "Open QuotaLoop")
@@ -214,14 +268,17 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .menu(&open)
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
-            "open" => show_window(app, "dashboard"),
+            "open" => open_dashboard_window(app, None),
             "refresh" => {
                 let _ = app.emit_to("popover", "tray-refresh-requested", ());
             }
             "pause" => {
                 let _ = app.emit_to("popover", "tray-pause-requested", ());
             }
-            "quit" => app.exit(0),
+            "quit" => {
+                set_auto_hide_suppressed(app, false);
+                app.exit(0);
+            }
             _ => {}
         })
         .on_tray_icon_event(move |_tray, event| {
@@ -248,6 +305,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(PopoverBehaviorState::default())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             get_platform_info,
@@ -256,6 +314,7 @@ pub fn run() {
             broadcast_desktop_snapshot,
             show_main_window,
             open_dashboard,
+            set_dashboard_section,
             get_window_label,
             hide_main_window,
             detect_provider
@@ -270,8 +329,27 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "dashboard" {
+                    set_auto_hide_suppressed(&window.app_handle(), false);
+                }
                 api.prevent_close();
                 let _ = window.hide();
+            }
+            #[cfg(target_os = "macos")]
+            if let WindowEvent::Focused(false) = event {
+                let suppressed = window
+                    .app_handle()
+                    .state::<PopoverBehaviorState>()
+                    .auto_hide_suppressed
+                    .load(Ordering::SeqCst);
+                if should_auto_hide_on_focus_loss(
+                    cfg!(target_os = "macos"),
+                    window.label(),
+                    false,
+                    suppressed,
+                ) {
+                    let _ = window.hide();
+                }
             }
         })
         .run(tauri::generate_context!())
@@ -297,5 +375,46 @@ mod tests {
             detect_provider_sync("custom-shell".into()).state,
             DetectionState::Unsupported
         );
+    }
+    #[test]
+    fn macos_focus_loss_hides_only_an_unsuppressed_popover() {
+        assert!(should_auto_hide_on_focus_loss(
+            true, "popover", false, false
+        ));
+        assert!(!should_auto_hide_on_focus_loss(
+            true, "popover", false, true
+        ));
+        assert!(!should_auto_hide_on_focus_loss(
+            true,
+            "dashboard",
+            false,
+            false
+        ));
+        assert!(!should_auto_hide_on_focus_loss(
+            true, "popover", true, false
+        ));
+    }
+    #[test]
+    fn non_macos_focus_loss_does_not_hide_the_popover() {
+        assert!(!should_auto_hide_on_focus_loss(
+            false, "popover", false, false
+        ));
+    }
+    #[test]
+    fn dashboard_section_allowlist_controls_suppression() {
+        assert_eq!(validated_dashboard_section(Some("settings")), "settings");
+        assert_eq!(validated_dashboard_section(Some("model_lab")), "model_lab");
+        assert_eq!(validated_dashboard_section(Some("unexpected")), "overview");
+        assert_eq!(validated_dashboard_section(None), "overview");
+        assert!(should_suppress_auto_hide_for_dashboard_section(Some(
+            "settings"
+        )));
+        assert!(!should_suppress_auto_hide_for_dashboard_section(Some(
+            "overview"
+        )));
+        assert!(!should_suppress_auto_hide_for_dashboard_section(Some(
+            "model_lab"
+        )));
+        assert!(!should_suppress_auto_hide_for_dashboard_section(None));
     }
 }

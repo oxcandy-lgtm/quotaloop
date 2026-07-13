@@ -325,6 +325,12 @@ function PopoverApp() {
   return (
     <main className="popover">
       <header className="tab-header">
+        <div className="popover-brand" aria-label="QuotaLoop">
+          <div className="mark" aria-hidden="true">
+            <Gauge />
+          </div>
+          <strong>QuotaLoop</strong>
+        </div>
         <div className="tab-list" role="tablist" aria-label="QuotaLoop views">
           <button
             role="tab"
@@ -658,6 +664,11 @@ function DashboardApp() {
       void listeners.then((items) => items.forEach((item) => item()));
     };
   }, [request]);
+  useEffect(() => {
+    // A newly mounted Dashboard starts at Overview, so release any stale
+    // Settings suppression before the first focus transition.
+    void invoke("set_dashboard_section", { section: "overview" });
+  }, []);
   const retry = () => {
     setAuthorityUnavailable(false);
     request("desktop_snapshot_requested", {});
@@ -740,7 +751,10 @@ function DashboardApp() {
           <button
             key={item}
             className={section === item ? "active" : ""}
-            onClick={() => setSection(item)}
+            onClick={() => {
+              setSection(item);
+              void invoke("set_dashboard_section", { section: item });
+            }}
           >
             {item}
           </button>
@@ -1099,7 +1113,7 @@ function providerDetectionState(detection: Detection | undefined) {
           : state === "unsupported"
             ? "Unsupported"
             : state === "timeout"
-              ? "Timed out"
+              ? "Detection timed out"
               : "Detection failed";
   return `${label} · Quota unavailable`;
 }
