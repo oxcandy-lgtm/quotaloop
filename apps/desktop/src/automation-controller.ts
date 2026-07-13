@@ -105,6 +105,8 @@ export class DesktopAutomationController {
     store.remove(POLICY_KEY);
     store.remove(HISTORY_KEY);
     store.remove(NOTIFICATION_KEY);
+    store.remove("quotaloop.desktop.ai-services");
+    store.remove("quotaloop.desktop.model-lab");
     store.remove("quotaloop.desktop.last-notification-event");
     return { policy, history: [] };
   }
