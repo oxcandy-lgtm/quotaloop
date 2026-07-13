@@ -208,6 +208,148 @@ export interface ModelLabHistory {
   results: Record<string, number>;
 }
 
+/** A bounded, secret-free snapshot of the OpenRouter free catalog. */
+export interface OpenRouterModel {
+  id: string;
+  name: string;
+  canonicalSlug: string;
+  created: number | null;
+  contextLength: number | null;
+  promptPrice: string;
+  completionPrice: string;
+  isFree: boolean;
+  isRouterAlias: boolean;
+  supportsStreaming: boolean;
+}
+export interface OpenRouterExcludedModel {
+  id: string;
+  reason: "paid" | "router_alias" | "missing_id" | "malformed" | "unsupported";
+}
+export interface OpenRouterCatalogSnapshot {
+  schemaVersion: 1;
+  fetchedAt: string;
+  catalogHash: string;
+  eligibleModels: OpenRouterModel[];
+  excludedModels: OpenRouterExcludedModel[];
+}
+export type OpenRouterBenchmarkCaseKind = "japanese" | "english" | "coding";
+export interface OpenRouterBenchmarkCase {
+  id: string;
+  kind: OpenRouterBenchmarkCaseKind;
+  language: "ja" | "en";
+  prompt: string;
+  expectedAnswer: string;
+  expectedTokens?: string[];
+}
+export interface OpenRouterBenchmarkManifest {
+  manifestId: "quotaloop.openrouter.free-benchmark.v1";
+  manifestHash: string;
+  promptHash: string;
+  systemPrompt: string;
+  cases: OpenRouterBenchmarkCase[];
+}
+export interface OpenRouterBenchmarkMetrics {
+  correctness: number;
+  instructionFollowing: number;
+  trackScores: {
+    japanese: number;
+    english: number;
+    coding: number;
+  };
+  caseCount: number;
+  ttftMs: number | null;
+  totalLatencyMs: number | null;
+  throughputTokensPerSecond: number | null;
+  tokenUsage: {
+    prompt: number | null;
+    completion: number | null;
+    total: number | null;
+  };
+  overallScore: number;
+}
+export interface OpenRouterBenchmarkResult {
+  id: string;
+  modelId: string;
+  modelName: string;
+  manifestId: string;
+  catalogHash: string;
+  completedAt: string;
+  outcome: "success" | "failed" | "cancelled" | "mismatch";
+  errorCode?:
+    | "unauthorized"
+    | "forbidden"
+    | "payment_required"
+    | "rate_limited"
+    | "server_error"
+    | "timeout"
+    | "cancelled"
+    | "model_mismatch"
+    | "invalid_response";
+  metrics: OpenRouterBenchmarkMetrics | null;
+  caseScores: Array<{ caseId: string; score: number; passed: boolean }>;
+}
+export type OpenRouterRunStatus =
+  | "idle"
+  | "running"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+export interface OpenRouterBenchmarkRunState {
+  runId: string | null;
+  status: OpenRouterRunStatus;
+  mode: "live";
+  modelIds: string[];
+  completedModelIds: string[];
+  failedModelIds?: string[];
+  currentModelId: string | null;
+  progress: number;
+  startedAt: string | null;
+  updatedAt: string | null;
+  catalogHash: string | null;
+  manifestHash: string;
+  concurrency: 1;
+  delayMs: 3200;
+  pausedReason?: "user" | "rate_limited" | "interrupted" | undefined;
+  retryAfterMs?: number | null | undefined;
+  lastErrorCode?: OpenRouterBenchmarkResult["errorCode"] | undefined;
+}
+export interface OpenRouterPersistentState {
+  catalog: OpenRouterCatalogSnapshot | null;
+  benchmarkRun: OpenRouterBenchmarkRunState;
+  benchmarkResults: OpenRouterBenchmarkResult[];
+}
+export interface OpenRouterKeyStatus {
+  configured: boolean;
+  source: "keychain" | "environment" | "none";
+  lastFour: string | null;
+}
+export const emptyOpenRouterPersistentState =
+  (): OpenRouterPersistentState => ({
+    catalog: null,
+    benchmarkRun: {
+      runId: null,
+      status: "idle",
+      mode: "live",
+      modelIds: [],
+      completedModelIds: [],
+      failedModelIds: [],
+      currentModelId: null,
+      progress: 0,
+      startedAt: null,
+      updatedAt: null,
+      catalogHash: null,
+      manifestHash: "",
+      concurrency: 1,
+      delayMs: 3200,
+      pausedReason: undefined,
+      retryAfterMs: null,
+      lastErrorCode: undefined,
+    },
+    benchmarkResults: [],
+  });
+
 export type DashboardSection =
   | "overview"
   | "providers"
@@ -241,6 +383,7 @@ export interface DesktopPersistentStateV2 {
   modelLabHistory: ModelLabHistory[];
   subscriptions: Subscription[];
   lastNotificationEventKey: string | null;
+  openrouter: OpenRouterPersistentState;
 }
 export interface ModelLabRunState {
   status: "idle" | "running" | "completed" | "failed";
@@ -259,6 +402,7 @@ export interface DesktopRuntimeSnapshotV2 {
   }>;
   modelLabRunState: ModelLabRunState;
   notificationPermission: NotificationPermissionState;
+  openrouter: OpenRouterPersistentState;
 }
 export type DesktopRequestType =
   | "desktop_snapshot_requested"
@@ -270,7 +414,12 @@ export type DesktopRequestType =
   | "notification_preference_requested"
   | "subscription_requested"
   | "clear_local_data_requested"
-  | "manual_action_requested";
+  | "manual_action_requested"
+  | "openrouter_catalog_refresh_requested"
+  | "openrouter_benchmark_requested"
+  | "openrouter_benchmark_pause_requested"
+  | "openrouter_benchmark_resume_requested"
+  | "openrouter_benchmark_cancel_requested";
 export const aiServicePreferenceSchema = z
   .object({
     serviceId: z.string().min(1),
@@ -296,6 +445,16 @@ export const desktopRequestPayloadSchemas = {
   subscription_requested: subscriptionMutationSchema,
   clear_local_data_requested: z.object({}).strict(),
   manual_action_requested: z.object({}).strict(),
+  openrouter_catalog_refresh_requested: z.object({}).strict(),
+  openrouter_benchmark_requested: z
+    .object({
+      modelIds: z.array(z.string().min(1)).max(100),
+      catalogHash: z.string().min(1),
+    })
+    .strict(),
+  openrouter_benchmark_pause_requested: z.object({}).strict(),
+  openrouter_benchmark_resume_requested: z.object({}).strict(),
+  openrouter_benchmark_cancel_requested: z.object({}).strict(),
 };
 export const desktopRequestEnvelopeSchema = z
   .object({
@@ -312,6 +471,11 @@ export const desktopRequestEnvelopeSchema = z
       "subscription_requested",
       "clear_local_data_requested",
       "manual_action_requested",
+      "openrouter_catalog_refresh_requested",
+      "openrouter_benchmark_requested",
+      "openrouter_benchmark_pause_requested",
+      "openrouter_benchmark_resume_requested",
+      "openrouter_benchmark_cancel_requested",
     ]),
     payload: z.unknown(),
   })

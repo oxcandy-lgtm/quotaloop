@@ -571,3 +571,47 @@ button:disabled {
 .settings-subscription-row button {
   grid-row: span 2;
 }
+.openrouter-results {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+.openrouter-results h3 {
+  margin: 0;
+  font-size: 12px;
+}
+.openrouter-result-sort {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+.openrouter-result-sort button {
+  font-size: 10px;
+  padding: 4px 6px;
+}
+.openrouter-result-sort button.active {
+  border-color: #4c96ff;
+  color: #fff;
+}
+.openrouter-result-list {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+.openrouter-result-row {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid #2d3a48;
+  border-radius: 7px;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.openrouter-result-row span {
+  color: #9aa8b8;
+}

@@ -156,4 +156,32 @@ describe("DesktopStateRepository legacy migration", () => {
 
     expect(values.size).toBe(0);
   });
+
+  it("falls back safely when the persisted OpenRouter slice is corrupt", () => {
+    values.set(
+      DESKTOP_STATE_KEY,
+      JSON.stringify({
+        schemaVersion: 2,
+        automationPolicy: validPolicy,
+        openrouter: {
+          catalog: {
+            schemaVersion: 1,
+            catalogHash: "bad",
+            fetchedAt: "bad",
+            eligibleModels: [{ id: 42 }],
+            excludedModels: "bad",
+          },
+          benchmarkRun: { status: "unknown", modelIds: "bad" },
+          benchmarkResults: [{ id: 42 }],
+        },
+      }),
+    );
+
+    const state = new DesktopStateRepository().load();
+
+    expect(state.automationPolicy.enabled).toBe(true);
+    expect(state.openrouter.catalog).toBeNull();
+    expect(state.openrouter.benchmarkRun.status).toBe("idle");
+    expect(state.openrouter.benchmarkResults).toEqual([]);
+  });
 });

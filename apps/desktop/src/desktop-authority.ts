@@ -9,6 +9,8 @@ import type {
   ModelLabHistory,
   NotificationPermissionState,
   SubscriptionMutation,
+  OpenRouterBenchmarkResult,
+  OpenRouterPersistentState,
 } from "@quotaloop/contracts";
 import {
   desktopRequestEnvelopeSchema,
@@ -25,6 +27,23 @@ import {
   syntheticCatalog,
   syntheticScores,
 } from "./model-lab/synthetic-catalog";
+import { normalizeOpenRouterCatalog } from "./openrouter/catalog";
+import { OPENROUTER_BENCHMARK_MANIFEST } from "./openrouter/benchmark-manifest";
+import {
+  OpenRouterBenchmarkRunner,
+  type OpenRouterModelRunner,
+  type OpenRouterRunnerStore,
+} from "./openrouter/runner";
+
+class MemoryOpenRouterStore implements OpenRouterRunnerStore {
+  constructor(private state: OpenRouterPersistentState) {}
+  load() {
+    return this.state.benchmarkRun;
+  }
+  save(state: OpenRouterPersistentState["benchmarkRun"]) {
+    this.state = { ...this.state, benchmarkRun: state };
+  }
+}
 
 const defaultServicePreferences = (): AIServicePreference[] =>
   serviceDefinitions.map((service) => ({
@@ -53,6 +72,9 @@ export class DesktopAuthority {
   private notificationPermission: NotificationPermissionState = "unknown";
   private lastNotificationEventKey: string | null = null;
   private persistent = defaultDesktopState();
+  private openrouterRunner: OpenRouterBenchmarkRunner | null = null;
+  private openrouterStore: MemoryOpenRouterStore | null = null;
+  private openrouterGeneration = 0;
   private readonly repository = new DesktopStateRepository();
   private onRecord: ((eventKey: string) => void | Promise<void>) | null = null;
   private onSnapshot: (() => void) | null = null;
@@ -79,6 +101,14 @@ export class DesktopAuthority {
   }
   async hydrate() {
     this.persistent = this.repository.load();
+    if (this.persistent.openrouter.benchmarkRun.status === "running") {
+      this.persistent.openrouter.benchmarkRun = {
+        ...this.persistent.openrouter.benchmarkRun,
+        status: "interrupted",
+        currentModelId: null,
+        updatedAt: new Date().toISOString(),
+      };
+    }
     this.controller.hydrateState(
       this.persistent.automationPolicy,
       this.persistent.executionHistory,
@@ -148,10 +178,12 @@ export class DesktopAuthority {
         modelLabHistory: this.persistent.modelLabHistory,
         subscriptions: this.persistent.subscriptions,
         lastNotificationEventKey: this.persistent.lastNotificationEventKey,
+        openrouter: this.persistent.openrouter,
       },
       providerStates: this.providerStates,
       modelLabRunState: this.modelLabRunState,
       notificationPermission: this.notificationPermission,
+      openrouter: this.persistent.openrouter,
     };
   }
   setProviderStates(states: DesktopRuntimeSnapshotV2["providerStates"]) {
@@ -211,6 +243,10 @@ export class DesktopAuthority {
       refreshProviders?: () => Promise<void>;
       manualAction?: () => Promise<void>;
       modelLabAction?: () => Promise<void>;
+      openrouterCatalog?: () => Promise<unknown>;
+      openrouterRunModel?: OpenRouterModelRunner;
+      openrouterCancel?: () => Promise<void>;
+      openrouterKeyStatus?: () => Promise<{ configured: boolean }>;
     } = {},
   ): Promise<DesktopRequestResult> {
     const envelope = desktopRequestEnvelopeSchema.safeParse(input);
@@ -376,7 +412,187 @@ export class DesktopAuthority {
           callbacks.modelLabAction ?? (async () => undefined),
           request.requestId,
         );
+      case "openrouter_catalog_refresh_requested": {
+        if (!callbacks.openrouterCatalog)
+          return {
+            requestId: request.requestId,
+            accepted: false,
+            revision: this.revision,
+            reason: "native_unavailable",
+          };
+        try {
+          const raw = await callbacks.openrouterCatalog();
+          this.persistent.openrouter.catalog = normalizeOpenRouterCatalog(raw);
+          this.repository.save(this.persistent);
+          this.changed();
+          return {
+            requestId: request.requestId,
+            accepted: true,
+            revision: this.revision,
+          };
+        } catch {
+          return {
+            requestId: request.requestId,
+            accepted: false,
+            revision: this.revision,
+            reason: "catalog_refresh_failed",
+          };
+        }
+      }
+      case "openrouter_benchmark_requested": {
+        const input = payload.data as {
+          modelIds: string[];
+          catalogHash: string;
+        };
+        const catalog = this.persistent.openrouter.catalog;
+        if (!catalog || catalog.catalogHash !== input.catalogHash)
+          return {
+            requestId: request.requestId,
+            accepted: false,
+            revision: this.revision,
+            reason: "catalog_changed",
+          };
+        if (!callbacks.openrouterRunModel)
+          return {
+            requestId: request.requestId,
+            accepted: false,
+            revision: this.revision,
+            reason: "native_unavailable",
+          };
+        if (callbacks.openrouterKeyStatus) {
+          try {
+            if (!(await callbacks.openrouterKeyStatus()).configured)
+              return {
+                requestId: request.requestId,
+                accepted: false,
+                revision: this.revision,
+                reason: "key_not_configured",
+              };
+          } catch {
+            return {
+              requestId: request.requestId,
+              accepted: false,
+              revision: this.revision,
+              reason: "key_status_unavailable",
+            };
+          }
+        }
+        this.ensureOpenRouterRunner(callbacks.openrouterRunModel);
+        const accepted = this.openrouterRunner!.runAllFreeModels(
+          catalog,
+          input.modelIds,
+        );
+        this.syncOpenRouterRunner();
+        return {
+          requestId: request.requestId,
+          accepted,
+          revision: this.revision,
+          ...(accepted ? {} : { reason: "execution_in_progress" }),
+        };
+      }
+      case "openrouter_benchmark_pause_requested":
+        if (!this.openrouterRunner?.pause())
+          return {
+            requestId: request.requestId,
+            accepted: false,
+            revision: this.revision,
+            reason: "not_running",
+          };
+        this.syncOpenRouterRunner();
+        return {
+          requestId: request.requestId,
+          accepted: true,
+          revision: this.revision,
+        };
+      case "openrouter_benchmark_resume_requested":
+        if (!callbacks.openrouterRunModel)
+          return {
+            requestId: request.requestId,
+            accepted: false,
+            revision: this.revision,
+            reason: "native_unavailable",
+          };
+        this.ensureOpenRouterRunner(callbacks.openrouterRunModel);
+        if (
+          !this.openrouterRunner?.resume(
+            this.persistent.openrouter.catalog ?? undefined,
+          )
+        )
+          return {
+            requestId: request.requestId,
+            accepted: false,
+            revision: this.revision,
+            reason: "not_paused",
+          };
+        this.syncOpenRouterRunner();
+        return {
+          requestId: request.requestId,
+          accepted: true,
+          revision: this.revision,
+        };
+      case "openrouter_benchmark_cancel_requested":
+        if (callbacks.openrouterCancel) await callbacks.openrouterCancel();
+        if (!this.openrouterRunner?.cancel())
+          return {
+            requestId: request.requestId,
+            accepted: false,
+            revision: this.revision,
+            reason: "not_running",
+          };
+        this.syncOpenRouterRunner();
+        return {
+          requestId: request.requestId,
+          accepted: true,
+          revision: this.revision,
+        };
     }
+  }
+
+  private ensureOpenRouterRunner(runModel: OpenRouterModelRunner) {
+    if (this.openrouterRunner) return;
+    const generation = this.openrouterGeneration;
+    this.openrouterStore = new MemoryOpenRouterStore(
+      this.persistent.openrouter,
+    );
+    this.openrouterRunner = new OpenRouterBenchmarkRunner(
+      OPENROUTER_BENCHMARK_MANIFEST,
+      this.openrouterStore,
+      runModel,
+      (result: OpenRouterBenchmarkResult) => {
+        if (generation !== this.openrouterGeneration) return;
+        const existing = this.persistent.openrouter.benchmarkResults;
+        const id =
+          result.id &&
+          !existing.some(
+            (item) => item.id === result.id && item.modelId !== result.modelId,
+          )
+            ? result.id
+            : `${result.id || this.openrouterRunner?.getSnapshot().runId}:${result.modelId}`;
+        const normalizedResult = {
+          ...result,
+          id,
+          catalogHash:
+            this.persistent.openrouter.catalog?.catalogHash ??
+            result.catalogHash,
+        };
+        if (!existing.some((item) => item.id === normalizedResult.id))
+          this.persistent.openrouter.benchmarkResults = [
+            normalizedResult,
+            ...existing,
+          ].slice(0, 100);
+        this.syncOpenRouterRunner();
+      },
+      3200,
+      () => this.syncOpenRouterRunner(),
+    );
+  }
+
+  private syncOpenRouterRunner() {
+    if (!this.openrouterRunner) return;
+    this.persistent.openrouter.benchmarkRun =
+      this.openrouterRunner.getSnapshot();
+    this.repository.save(this.persistent);
+    this.changed();
   }
 
   private mutateSubscription(
@@ -555,6 +771,10 @@ export class DesktopAuthority {
     this.lastNotificationEventKey = null;
     const result = this.controller.resetToSafeDefaults();
     this.persistent = defaultDesktopState();
+    this.openrouterGeneration += 1;
+    this.openrouterRunner?.cancel();
+    this.openrouterRunner = null;
+    this.openrouterStore = null;
     this.repository.clear();
     this.changed();
     return result;

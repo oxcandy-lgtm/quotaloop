@@ -13,3 +13,7 @@ test-results/
 **/src-tauri/icons/ios/
 *.tsbuildinfo
 *.log
+.quotaloop/
+*.openrouter.json
+openrouter-*.json
+apps/desktop/.local/

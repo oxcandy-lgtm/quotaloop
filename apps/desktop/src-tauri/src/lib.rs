@@ -10,6 +10,13 @@ use tauri::{
     WindowEvent,
 };
 
+mod openrouter;
+use openrouter::{
+    cancel_openrouter_benchmark, delete_openrouter_key, fetch_openrouter_catalog,
+    openrouter_key_status, run_openrouter_benchmark_model, save_openrouter_key,
+    test_openrouter_connection, OpenRouterRuntimeState,
+};
+
 const DETECTION_TIMEOUT: Duration = Duration::from_secs(2);
 const OUTPUT_LIMIT: usize = 16 * 1024;
 pub const DETECTABLE_PROVIDER_IDS: &[&str] = &["codex", "claude-code", "gemini-cli", "opencode"];
@@ -565,6 +572,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .manage(PopoverBehaviorState::default())
+        .manage(OpenRouterRuntimeState::default())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             get_platform_info,
@@ -577,7 +585,14 @@ pub fn run() {
             set_dashboard_section,
             get_window_label,
             hide_main_window,
-            detect_provider
+            detect_provider,
+            openrouter_key_status,
+            save_openrouter_key,
+            delete_openrouter_key,
+            test_openrouter_connection,
+            fetch_openrouter_catalog,
+            run_openrouter_benchmark_model,
+            cancel_openrouter_benchmark
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
