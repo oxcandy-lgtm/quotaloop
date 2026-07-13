@@ -66,6 +66,14 @@ const result = (modelId: string): OpenRouterBenchmarkResult => ({
   caseScores: [],
 });
 
+const waitFor = async (predicate: () => boolean) => {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("runner state did not settle in time");
+};
+
 describe("OpenRouter single runner", () => {
   it("runs at most once and prevents duplicate completed models", async () => {
     const store = new Store({
@@ -93,7 +101,7 @@ describe("OpenRouter single runner", () => {
     );
     expect(runner.runAllFreeModels(catalog)).toBe(true);
     expect(runner.runAllFreeModels(catalog)).toBe(false);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitFor(() => runner.getSnapshot().status === "completed");
     expect(results).toEqual(["a/model:free", "b/model:free"]);
     expect(runner.getSnapshot().status).toBe("completed");
     expect(runner.getSnapshot().completedModelIds).toHaveLength(2);
@@ -151,7 +159,7 @@ describe("OpenRouter single runner", () => {
       0,
     );
     expect(runner.runAllFreeModels(catalog)).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitFor(() => runner.getSnapshot().status === "completed");
     expect(results.map((item) => `${item.modelId}:${item.outcome}`)).toEqual([
       "a/model:free:failed",
       "b/model:free:success",
@@ -189,11 +197,11 @@ describe("OpenRouter single runner", () => {
       0,
     );
     expect(runner.resume(catalog)).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitFor(() => runner.getSnapshot().status === "paused");
     expect(runner.getSnapshot().status).toBe("paused");
     expect(runner.getSnapshot().pausedReason).toBe("rate_limited");
     expect(runner.resume(catalog)).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitFor(() => runner.getSnapshot().status === "completed");
     expect(runner.getSnapshot().status).toBe("completed");
     expect(runner.getSnapshot().completedModelIds).toEqual([
       "a/model:free",
