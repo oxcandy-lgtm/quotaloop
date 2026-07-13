@@ -1139,31 +1139,33 @@ function SettingsPanel({
         .map((preference) => (
           <fieldset key={preference.serviceId} className="settings-service">
             <legend>{preference.serviceId}</legend>
-            {(
-              [
-                ["enabled", "Enabled"],
-                ["visibleInQuota", "Quota"],
-                ["visibleInModelLab", "Model Lab"],
-                ["allowCatalogAccess", "Catalog"],
-                ["allowBenchmarkRequests", "Benchmark"],
-                ["favorite", "Favorite"],
-              ] as const
-            ).map(([key, label]) => (
-              <label key={key}>
-                {label}
-                <input
-                  type="checkbox"
-                  checked={preference[key]}
-                  onChange={(event) =>
-                    updateServicePreference(
-                      preference,
-                      key,
-                      event.target.checked,
-                    )
-                  }
-                />
-              </label>
-            ))}
+            <div className="settings-option-list">
+              {(
+                [
+                  ["enabled", "Enabled"],
+                  ["visibleInQuota", "Visible in Quota"],
+                  ["visibleInModelLab", "Visible in Model Lab"],
+                  ["allowCatalogAccess", "Allow catalog access"],
+                  ["allowBenchmarkRequests", "Allow benchmark requests"],
+                  ["favorite", "Favorite"],
+                ] as const
+              ).map(([key, label]) => (
+                <label key={key} className="settings-toggle-row">
+                  <span>{label}</span>
+                  <input
+                    type="checkbox"
+                    checked={preference[key]}
+                    onChange={(event) =>
+                      updateServicePreference(
+                        preference,
+                        key,
+                        event.target.checked,
+                      )
+                    }
+                  />
+                </label>
+              ))}
+            </div>
           </fieldset>
         ))}
     </>
@@ -1192,18 +1194,22 @@ function SettingsPanel({
         }
       >
         <legend>Select synthetic models</legend>
-        {syntheticCatalog.map((model) => (
-          <label key={model.id}>
-            <input
-              type="checkbox"
-              checked={snapshot.persistent.modelLabPreferences.selectedModelIds.includes(
-                model.id,
-              )}
-              onChange={() => toggleModel(model.id)}
-            />
-            {model.name} <small>Demo / Synthetic</small>
-          </label>
-        ))}
+        <div className="settings-option-list">
+          {syntheticCatalog.map((model) => (
+            <label key={model.id} className="settings-toggle-row">
+              <span>
+                {model.name} <small>Demo / Synthetic</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={snapshot.persistent.modelLabPreferences.selectedModelIds.includes(
+                  model.id,
+                )}
+                onChange={() => toggleModel(model.id)}
+              />
+            </label>
+          ))}
+        </div>
       </fieldset>
       <h3>Recent synthetic results</h3>
       {snapshot.persistent.modelLabHistory.length ? (
@@ -1231,46 +1237,50 @@ function SettingsPanel({
           Daily maximum: {policy.maximumRunsPerDay} · Active hours:{" "}
           {policy.activeHours.start}–{policy.activeHours.end}
         </p>
-        <button
-          onClick={() =>
-            request("automation_policy_requested", {
-              ...policy,
-              enabled: !policy.enabled,
-            })
-          }
-        >
-          {policy.enabled ? "Disable automation" : "Enable automation"}
-        </button>
-        <button
-          onClick={() =>
-            request("automation_policy_requested", {
-              ...policy,
-              paused: !policy.paused,
-            })
-          }
-        >
-          {policy.paused ? "Resume" : "Pause"}
-        </button>
+        <div className="settings-option-list">
+          <button
+            onClick={() =>
+              request("automation_policy_requested", {
+                ...policy,
+                enabled: !policy.enabled,
+              })
+            }
+          >
+            {policy.enabled ? "Disable automation" : "Enable automation"}
+          </button>
+          <button
+            onClick={() =>
+              request("automation_policy_requested", {
+                ...policy,
+                paused: !policy.paused,
+              })
+            }
+          >
+            {policy.paused ? "Resume" : "Pause"}
+          </button>
+        </div>
       </>
     );
   };
   const renderNotifications = () => (
     <>
       <h2>Notifications</h2>
-      <label className="settings-toggle-row">
-        <span>Action notifications</span>
-        <input
-          type="checkbox"
-          checked={snapshot.persistent.preferences.notifications.enabled}
-          onChange={(event) =>
-            request("notification_preference_requested", {
-              enabled: event.target.checked,
-              actionCompleted:
-                snapshot.persistent.preferences.notifications.actionCompleted,
-            })
-          }
-        />
-      </label>
+      <div className="settings-option-list">
+        <label className="settings-toggle-row">
+          <span>Action notifications</span>
+          <input
+            type="checkbox"
+            checked={snapshot.persistent.preferences.notifications.enabled}
+            onChange={(event) =>
+              request("notification_preference_requested", {
+                enabled: event.target.checked,
+                actionCompleted:
+                  snapshot.persistent.preferences.notifications.actionCompleted,
+              })
+            }
+          />
+        </label>
+      </div>
       <p>Permission: {snapshot.notificationPermission}</p>
       <p>Notification preferences remain local to this Desktop build.</p>
     </>
@@ -1357,19 +1367,21 @@ function SettingsPanel({
           }
         />
       </label>
-      <label className="settings-toggle-row">
-        <span>Auto renew</span>
-        <input
-          type="checkbox"
-          checked={subscriptionDraft.autoRenew}
-          onChange={(event) =>
-            setSubscriptionDraft({
-              ...subscriptionDraft,
-              autoRenew: event.target.checked,
-            })
-          }
-        />
-      </label>
+      <div className="settings-option-list">
+        <label className="settings-toggle-row">
+          <span>Auto renew</span>
+          <input
+            type="checkbox"
+            checked={subscriptionDraft.autoRenew}
+            onChange={(event) =>
+              setSubscriptionDraft({
+                ...subscriptionDraft,
+                autoRenew: event.target.checked,
+              })
+            }
+          />
+        </label>
+      </div>
       <button onClick={addSubscription}>
         {editingSubscriptionId ? "Save subscription" : "Add subscription"}
       </button>

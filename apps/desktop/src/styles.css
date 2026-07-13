@@ -512,6 +512,16 @@ button:disabled {
 .settings-pane > label input {
   width: 100%;
 }
+.settings-option-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+}
+.settings-option-list > button {
+  width: 100%;
+}
 .settings-service {
   width: 100%;
   margin: 0;
@@ -524,20 +534,26 @@ button:disabled {
   color: #edf3fa;
   font-size: 11px;
 }
-.settings-service label,
+.settings-option-list > label,
 .settings-toggle-row {
   display: flex;
+  width: 100%;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
   padding: 4px 0;
   color: #c8d2dd;
   font-size: 11px;
 }
-.settings-service input,
+.settings-option-list input,
 .settings-toggle-row input {
   flex: 0 0 auto;
+}
+.settings-option-list > label span,
+.settings-toggle-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .settings-subscription-row {
   display: grid;

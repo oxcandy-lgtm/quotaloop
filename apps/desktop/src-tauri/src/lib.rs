@@ -17,6 +17,7 @@ pub const DETECTABLE_PROVIDER_IDS: &[&str] = &["codex", "claude-code", "gemini-c
 #[derive(Default)]
 struct PopoverBehaviorState {
     auto_hide_suppressed: AtomicBool,
+    restore_popover_on_settings_destroy: AtomicBool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -186,6 +187,14 @@ fn set_auto_hide_suppressed(app: &tauri::AppHandle, suppressed: bool) {
     }
 }
 
+fn set_restore_popover_on_settings_destroy(app: &tauri::AppHandle, restore: bool) {
+    if let Some(state) = app.try_state::<PopoverBehaviorState>() {
+        state
+            .restore_popover_on_settings_destroy
+            .store(restore, Ordering::SeqCst);
+    }
+}
+
 fn clear_settings_suppression_if_closed(app: &tauri::AppHandle) {
     let settings_visible = app
         .get_webview_window("settings")
@@ -231,6 +240,12 @@ enum SettingsWindowAction {
     DestroyAndCreate,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum SettingsDestroyAction {
+    ReleaseOnly,
+    RestorePopover,
+}
+
 fn settings_window_action(
     is_macos: bool,
     existing: bool,
@@ -247,12 +262,23 @@ fn settings_window_action(
     }
 }
 
+fn settings_destroy_action(restore_popover: bool) -> SettingsDestroyAction {
+    if restore_popover {
+        SettingsDestroyAction::RestorePopover
+    } else {
+        SettingsDestroyAction::ReleaseOnly
+    }
+}
+
 fn release_settings_suppression(app: &tauri::AppHandle) {
     set_auto_hide_suppressed(app, false);
+}
+
+fn restore_popover_after_settings_close(app: &tauri::AppHandle) {
+    release_settings_suppression(app);
     if let Some(popover) = app.get_webview_window("popover") {
-        if !popover.is_focused().unwrap_or(false) {
-            let _ = popover.hide();
-        }
+        let _ = popover.show();
+        let _ = popover.set_focus();
     }
 }
 
@@ -271,6 +297,7 @@ fn open_settings_window_internal(app: &tauri::AppHandle) -> Result<(), String> {
 
     #[cfg(target_os = "macos")]
     {
+        set_restore_popover_on_settings_destroy(app, true);
         set_auto_hide_suppressed(app, true);
         let existing = app.get_webview_window("settings");
         let action = settings_window_action(
@@ -291,13 +318,14 @@ fn open_settings_window_internal(app: &tauri::AppHandle) -> Result<(), String> {
                 }
             }
             SettingsWindowAction::DestroyAndCreate => {
+                set_restore_popover_on_settings_destroy(app, false);
                 if let Some(window) = existing {
                     if let Err(error) = window.destroy() {
                         release_settings_suppression(app);
+                        set_restore_popover_on_settings_destroy(app, true);
                         return Err(error.to_string());
                     }
-                    // Destroyed is allowed to release suppression; creation must
-                    // re-enable it before the new window receives focus.
+                    set_restore_popover_on_settings_destroy(app, true);
                     set_auto_hide_suppressed(app, true);
                 }
             }
@@ -324,14 +352,14 @@ fn open_settings_window_internal(app: &tauri::AppHandle) -> Result<(), String> {
             Ok(window) => {
                 if let Err(error) = focus_settings_window(&window) {
                     let _ = window.destroy();
-                    release_settings_suppression(app);
+                    restore_popover_after_settings_close(app);
                     Err(error)
                 } else {
                     Ok(())
                 }
             }
             Err(error) => {
-                release_settings_suppression(app);
+                restore_popover_after_settings_close(app);
                 Err(error)
             }
         }
@@ -409,6 +437,7 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 let _ = app.emit_to("popover", "tray-pause-requested", ());
             }
             "quit" => {
+                set_restore_popover_on_settings_destroy(app, false);
                 set_auto_hide_suppressed(app, false);
                 app.exit(0);
             }
@@ -464,8 +493,27 @@ pub fn run() {
         .on_window_event(|window, event| {
             if window.label() == "settings" {
                 match event {
-                    WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
-                        release_settings_suppression(&window.app_handle());
+                    WindowEvent::CloseRequested { .. } => {
+                        return;
+                    }
+                    WindowEvent::Destroyed => {
+                        let app = window.app_handle();
+                        let restore = app
+                            .try_state::<PopoverBehaviorState>()
+                            .map(|state| {
+                                state
+                                    .restore_popover_on_settings_destroy
+                                    .load(Ordering::SeqCst)
+                            })
+                            .unwrap_or(true);
+                        match settings_destroy_action(restore) {
+                            SettingsDestroyAction::RestorePopover => {
+                                restore_popover_after_settings_close(&app)
+                            }
+                            SettingsDestroyAction::ReleaseOnly => {
+                                release_settings_suppression(&app)
+                            }
+                        }
                         return;
                     }
                     _ => {}
@@ -578,6 +626,23 @@ mod tests {
         assert_eq!(
             settings_window_action(true, true, None),
             SettingsWindowAction::DestroyAndCreate
+        );
+    }
+    #[test]
+    fn settings_user_close_restores_popover_and_next_focus_loss_hides_it() {
+        assert_eq!(
+            settings_destroy_action(true),
+            SettingsDestroyAction::RestorePopover
+        );
+        assert!(should_auto_hide_on_focus_loss(
+            true, "popover", false, false
+        ));
+    }
+    #[test]
+    fn internal_recreate_and_quit_release_without_popover_restoration() {
+        assert_eq!(
+            settings_destroy_action(false),
+            SettingsDestroyAction::ReleaseOnly
         );
     }
 }

@@ -37,6 +37,35 @@ describe("macOS Settings window contract", () => {
     expect(focusIndex).toBeGreaterThan(suppressionIndex);
   });
 
+  it("restores the Popover only for a user-visible Settings close", () => {
+    expect(rust).toContain("restore_popover_on_settings_destroy");
+    expect(rust).toContain("SettingsDestroyAction::RestorePopover");
+    expect(rust).toContain("SettingsDestroyAction::ReleaseOnly");
+    expect(rust).toContain("restore_popover_after_settings_close");
+    expect(rust).toContain("WindowEvent::Destroyed");
+    const restoreStart = rust.indexOf(
+      "fn restore_popover_after_settings_close",
+    );
+    const restoreEnd = rust.indexOf('#[cfg(target_os = "macos")]');
+    expect(restoreStart).toBeGreaterThanOrEqual(0);
+    expect(rust.slice(restoreStart, restoreEnd)).not.toContain(
+      "popover.hide()",
+    );
+    expect(rust).toContain(
+      "set_restore_popover_on_settings_destroy(app, false);",
+    );
+  });
+
+  it("keeps the compact dimensions and one-column option contract", () => {
+    expect(rust).toContain(".inner_size(520.0, 620.0)");
+    expect(rust).toContain(".min_inner_size(480.0, 520.0)");
+    expect(main.match(/settings-option-list/g)?.length).toBeGreaterThanOrEqual(
+      4,
+    );
+    expect(main).toContain("Visible in Quota");
+    expect(main).toContain("Allow benchmark requests");
+  });
+
   it("uses the existing authority transport without a second authority", () => {
     expect(main).toContain("function useDesktopClient");
     expect(main).toContain("request_desktop");

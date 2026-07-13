@@ -29,7 +29,11 @@ describe("macOS Popover layout contract", () => {
     expect(styles).toContain("grid-template-columns: 145px minmax(0, 1fr)");
     expect(styles).toContain("overflow-y: auto");
     expect(styles).toContain("overflow-x: hidden");
+    expect(styles).toContain(".settings-option-list");
+    expect(styles).toContain("grid-template-columns: minmax(0, 1fr);");
     expect(main).toContain('className="settings-surface"');
+    expect(main).toContain('className="settings-option-list"');
+    expect(main).toContain('className="settings-toggle-row"');
     expect(main).toContain('aria-label="Settings sections"');
   });
 
