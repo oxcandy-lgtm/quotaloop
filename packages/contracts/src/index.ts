@@ -251,6 +251,12 @@ export interface OpenRouterBenchmarkManifest {
 export interface OpenRouterBenchmarkMetrics {
   correctness: number;
   instructionFollowing: number;
+  trackScores: {
+    japanese: number;
+    english: number;
+    coding: number;
+  };
+  caseCount: number;
   ttftMs: number | null;
   totalLatencyMs: number | null;
   throughputTokensPerSecond: number | null;
@@ -296,6 +302,7 @@ export interface OpenRouterBenchmarkRunState {
   mode: "live";
   modelIds: string[];
   completedModelIds: string[];
+  failedModelIds?: string[];
   currentModelId: string | null;
   progress: number;
   startedAt: string | null;
@@ -304,6 +311,9 @@ export interface OpenRouterBenchmarkRunState {
   manifestHash: string;
   concurrency: 1;
   delayMs: 3200;
+  pausedReason?: "user" | "rate_limited" | "interrupted" | undefined;
+  retryAfterMs?: number | null | undefined;
+  lastErrorCode?: OpenRouterBenchmarkResult["errorCode"] | undefined;
 }
 export interface OpenRouterPersistentState {
   catalog: OpenRouterCatalogSnapshot | null;
@@ -324,6 +334,7 @@ export const emptyOpenRouterPersistentState =
       mode: "live",
       modelIds: [],
       completedModelIds: [],
+      failedModelIds: [],
       currentModelId: null,
       progress: 0,
       startedAt: null,
@@ -332,6 +343,9 @@ export const emptyOpenRouterPersistentState =
       manifestHash: "",
       concurrency: 1,
       delayMs: 3200,
+      pausedReason: undefined,
+      retryAfterMs: null,
+      lastErrorCode: undefined,
     },
     benchmarkResults: [],
   });

@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -92,6 +98,16 @@ type NativeOpenRouterBenchmarkResponse = Omit<
   "metrics" | "caseScores"
 > & {
   answerText?: string;
+  metrics?: {
+    ttftMs?: number | null;
+    totalLatencyMs?: number | null;
+    throughputTokensPerSecond?: number | null;
+    tokenUsage?: {
+      prompt?: number | null;
+      completion?: number | null;
+      total?: number | null;
+    };
+  } | null;
 };
 
 async function runNativeOpenRouterModel(input: {
@@ -99,36 +115,59 @@ async function runNativeOpenRouterModel(input: {
   runId: string;
   manifest: typeof OPENROUTER_BENCHMARK_MANIFEST;
   catalogHash?: string;
+  eligibleModelIds?: string[];
 }): Promise<OpenRouterBenchmarkResult> {
   const raw = await invoke<NativeOpenRouterBenchmarkResponse>(
     "run_openrouter_benchmark_model",
     {
       ...input,
-      manifest: { ...input.manifest, catalogHash: input.catalogHash },
+      manifest: {
+        ...input.manifest,
+        catalogHash: input.catalogHash,
+        eligibleModelIds: input.eligibleModelIds ?? [],
+      },
     },
   );
   const answers: Record<string, string> = {};
   try {
-    const parsed = JSON.parse(raw.answerText ?? "") as unknown;
-    if (Array.isArray(parsed)) {
-      for (const item of parsed) {
-        if (
-          item &&
-          typeof item === "object" &&
-          typeof (item as Record<string, unknown>).id === "string" &&
-          typeof (item as Record<string, unknown>).answer === "string"
-        ) {
-          const record = item as { id: string; answer: string };
-          answers[record.id] = record.answer;
-        }
+    const candidate = (raw.answerText ?? "")
+      .trim()
+      .replace(/^```(?:json|text)?\s*/i, "")
+      .replace(/\s*```$/i, "")
+      .trim();
+    const parsed = JSON.parse(candidate) as unknown;
+    const items = Array.isArray(parsed)
+      ? parsed
+      : parsed &&
+          typeof parsed === "object" &&
+          Array.isArray((parsed as Record<string, unknown>).answers)
+        ? ((parsed as Record<string, unknown>).answers as unknown[])
+        : [];
+    for (const item of items) {
+      if (
+        item &&
+        typeof item === "object" &&
+        typeof (item as Record<string, unknown>).id === "string" &&
+        typeof (item as Record<string, unknown>).answer === "string"
+      ) {
+        const record = item as { id: string; answer: string };
+        answers[record.id] = record.answer;
       }
     }
   } catch {
     // Invalid model output is scored as zero by the deterministic scorer.
   }
-  const scored = scoreBenchmark(input.manifest.cases, answers);
+  const rawMetrics = raw.metrics;
+  const scored = scoreBenchmark(input.manifest.cases, answers, {
+    ttftMs: rawMetrics?.ttftMs,
+    totalLatencyMs: rawMetrics?.totalLatencyMs,
+    throughputTokensPerSecond: rawMetrics?.throughputTokensPerSecond,
+    promptTokens: rawMetrics?.tokenUsage?.prompt,
+    completionTokens: rawMetrics?.tokenUsage?.completion,
+    totalTokens: rawMetrics?.tokenUsage?.total,
+  });
   return {
-    id: raw.id,
+    id: raw.id || `${input.runId}:${input.modelId}`,
     modelId: raw.modelId,
     modelName: raw.modelName,
     manifestId: raw.manifestId,
@@ -139,6 +178,114 @@ async function runNativeOpenRouterModel(input: {
     metrics: scored.metrics,
     caseScores: scored.caseScores,
   };
+}
+
+type OpenRouterResultSortKey =
+  "overallScore" | "correctness" | "latency" | "throughput" | "tokens";
+
+const metricValue = (
+  result: OpenRouterBenchmarkResult,
+  key: OpenRouterResultSortKey,
+) => {
+  const metrics = result.metrics;
+  if (!metrics) return -1;
+  switch (key) {
+    case "overallScore":
+      return metrics.overallScore;
+    case "correctness":
+      return metrics.correctness;
+    case "latency":
+      return metrics.totalLatencyMs ?? -1;
+    case "throughput":
+      return metrics.throughputTokensPerSecond ?? -1;
+    case "tokens":
+      return metrics.tokenUsage.total ?? -1;
+  }
+};
+
+function OpenRouterResultsTable({
+  results,
+}: {
+  results: OpenRouterBenchmarkResult[];
+}) {
+  const [sortKey, setSortKey] =
+    useState<OpenRouterResultSortKey>("overallScore");
+  const sorted = useMemo(
+    () =>
+      [...results].sort(
+        (left, right) =>
+          metricValue(right, sortKey) - metricValue(left, sortKey) ||
+          left.modelId.localeCompare(right.modelId),
+      ),
+    [results, sortKey],
+  );
+  const selectSort = (key: OpenRouterResultSortKey) => () => setSortKey(key);
+  return (
+    <section
+      className="openrouter-results"
+      aria-label="OpenRouter benchmark results"
+    >
+      <h3>Live results</h3>
+      <div
+        className="openrouter-result-sort"
+        role="group"
+        aria-label="Sort results"
+      >
+        {(
+          [
+            ["overallScore", "Overall"],
+            ["correctness", "Correctness"],
+            ["latency", "Latency"],
+            ["throughput", "Throughput"],
+            ["tokens", "Tokens"],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            className={sortKey === key ? "active" : ""}
+            onClick={selectSort(key)}
+          >
+            Sort: {label}
+          </button>
+        ))}
+      </div>
+      {sorted.length ? (
+        <div
+          className="openrouter-result-list"
+          role="table"
+          aria-label="Benchmark result table"
+        >
+          {sorted.map((result) => {
+            const metrics = result.metrics;
+            return (
+              <div className="openrouter-result-row" role="row" key={result.id}>
+                <strong>{result.modelName}</strong>
+                <span>{result.outcome}</span>
+                <span>Overall {metrics?.overallScore ?? "—"}</span>
+                <span>
+                  Tracks J/E/C{" "}
+                  {metrics?.trackScores
+                    ? `${metrics.trackScores.japanese}/${metrics.trackScores.english}/${metrics.trackScores.coding}`
+                    : "—"}
+                </span>
+                <span>Correct {metrics?.correctness ?? "—"}</span>
+                <span>Instruction {metrics?.instructionFollowing ?? "—"}</span>
+                <span>TTFT {metrics?.ttftMs ?? "—"} ms</span>
+                <span>Latency {metrics?.totalLatencyMs ?? "—"} ms</span>
+                <span>
+                  Throughput {metrics?.throughputTokensPerSecond ?? "—"}
+                </span>
+                <span>Tokens {metrics?.tokenUsage.total ?? "—"}</span>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="muted">No live results yet.</p>
+      )}
+    </section>
+  );
 }
 function PopoverApp() {
   const [detections, setDetections] = useState<Record<string, Detection>>(() =>
@@ -768,12 +915,9 @@ function ModelLabPopover({
           >
             Cancel
           </button>
-          {(openrouter?.benchmarkResults ?? []).slice(0, 5).map((result) => (
-            <p key={result.id}>
-              {result.modelName} · {result.outcome} ·{" "}
-              {result.metrics?.overallScore ?? 0}
-            </p>
-          ))}
+          <OpenRouterResultsTable
+            results={openrouter?.benchmarkResults ?? []}
+          />
         </>
       ) : (
         <>
@@ -1087,6 +1231,9 @@ function DashboardApp() {
             Run live free-model benchmark
           </button>
           <p>Live results are never mixed into synthetic history.</p>
+          <OpenRouterResultsTable
+            results={snapshot.openrouter.benchmarkResults}
+          />
           <p>
             Runtime: {snapshot.modelLabRunState.status} ·{" "}
             {snapshot.modelLabRunState.progress}%

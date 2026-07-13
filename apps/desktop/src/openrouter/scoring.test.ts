@@ -17,5 +17,17 @@ describe("OpenRouter deterministic scoring", () => {
     );
     expect(scored.metrics.correctness).toBe(100);
     expect(scored.metrics.throughputTokensPerSecond).toBe(20);
+    expect(scored.metrics.trackScores.japanese).toBe(100);
+    expect(scored.metrics.trackScores.english).toBe(0);
+    expect(scored.metrics.caseCount).toBe(2);
+  });
+  it("scores instruction adherence separately from token correctness", () => {
+    const testCase = OPENROUTER_BENCHMARK_MANIFEST.cases[0]!;
+    const scored = scoreBenchmark([testCase], {
+      [testCase.id]: "東京です。補足はありません。",
+    });
+    expect(scored.metrics.correctness).toBe(100);
+    expect(scored.metrics.instructionFollowing).toBe(50);
+    expect(scored.metrics.overallScore).toBe(85);
   });
 });

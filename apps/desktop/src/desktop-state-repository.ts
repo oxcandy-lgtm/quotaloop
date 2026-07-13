@@ -219,13 +219,37 @@ function parseOpenRouterState(
   ];
   const benchmarkRun = {
     ...fallback.benchmarkRun,
-    ...rawRun,
+    runId:
+      typeof rawRun.runId === "string" || rawRun.runId === null
+        ? rawRun.runId
+        : fallback.benchmarkRun.runId,
     status: statuses.includes(String(rawRun.status))
       ? rawRun.status
       : fallback.benchmarkRun.status,
     mode: "live" as const,
     concurrency: 1 as const,
     delayMs: 3200 as const,
+    currentModelId:
+      typeof rawRun.currentModelId === "string" ||
+      rawRun.currentModelId === null
+        ? rawRun.currentModelId
+        : null,
+    startedAt:
+      typeof rawRun.startedAt === "string" || rawRun.startedAt === null
+        ? rawRun.startedAt
+        : null,
+    updatedAt:
+      typeof rawRun.updatedAt === "string" || rawRun.updatedAt === null
+        ? rawRun.updatedAt
+        : null,
+    catalogHash:
+      typeof rawRun.catalogHash === "string" || rawRun.catalogHash === null
+        ? rawRun.catalogHash
+        : null,
+    manifestHash:
+      typeof rawRun.manifestHash === "string"
+        ? rawRun.manifestHash
+        : fallback.benchmarkRun.manifestHash,
     modelIds: Array.isArray(rawRun.modelIds)
       ? rawRun.modelIds
           .filter((item): item is string => typeof item === "string")
@@ -236,14 +260,45 @@ function parseOpenRouterState(
           .filter((item): item is string => typeof item === "string")
           .slice(0, 100)
       : [],
+    failedModelIds: Array.isArray(rawRun.failedModelIds)
+      ? rawRun.failedModelIds
+          .filter((item): item is string => typeof item === "string")
+          .slice(0, 100)
+      : [],
+    pausedReason:
+      rawRun.pausedReason === "user" ||
+      rawRun.pausedReason === "rate_limited" ||
+      rawRun.pausedReason === "interrupted"
+        ? rawRun.pausedReason
+        : undefined,
+    retryAfterMs:
+      typeof rawRun.retryAfterMs === "number" &&
+      Number.isFinite(rawRun.retryAfterMs)
+        ? Math.max(0, Math.min(60_000, rawRun.retryAfterMs))
+        : null,
+    lastErrorCode:
+      typeof rawRun.lastErrorCode === "string" &&
+      [
+        "unauthorized",
+        "forbidden",
+        "payment_required",
+        "rate_limited",
+        "server_error",
+        "timeout",
+        "cancelled",
+        "model_mismatch",
+        "invalid_response",
+      ].includes(rawRun.lastErrorCode)
+        ? (rawRun.lastErrorCode as OpenRouterPersistentState["benchmarkRun"]["lastErrorCode"])
+        : undefined,
     progress:
       typeof rawRun.progress === "number" && Number.isFinite(rawRun.progress)
         ? Math.max(0, Math.min(100, rawRun.progress))
         : 0,
   } as OpenRouterPersistentState["benchmarkRun"];
   const benchmarkResults = Array.isArray(value.benchmarkResults)
-    ? (
-        value.benchmarkResults.filter(
+    ? value.benchmarkResults
+        .filter(
           (item) =>
             isRecord(item) &&
             typeof item.id === "string" &&
@@ -252,8 +307,34 @@ function parseOpenRouterState(
             ["success", "failed", "cancelled", "mismatch"].includes(
               String(item.outcome),
             ),
-        ) as OpenRouterPersistentState["benchmarkResults"]
-      ).slice(0, 100)
+        )
+        .map((item) => {
+          const result = item as Record<string, unknown>;
+          const metrics = isRecord(result.metrics) ? result.metrics : null;
+          const tokenUsage =
+            metrics && isRecord(metrics.tokenUsage) ? metrics.tokenUsage : null;
+          const trackScores =
+            metrics && isRecord(metrics.trackScores)
+              ? metrics.trackScores
+              : null;
+          const safeMetrics =
+            metrics &&
+            typeof metrics.correctness === "number" &&
+            typeof metrics.instructionFollowing === "number" &&
+            typeof metrics.overallScore === "number" &&
+            tokenUsage &&
+            trackScores &&
+            typeof trackScores.japanese === "number" &&
+            typeof trackScores.english === "number" &&
+            typeof trackScores.coding === "number"
+              ? metrics
+              : null;
+          return {
+            ...result,
+            metrics: safeMetrics,
+          } as unknown as OpenRouterPersistentState["benchmarkResults"][number];
+        })
+        .slice(0, 100)
     : [];
   return { catalog, benchmarkRun, benchmarkResults };
 }

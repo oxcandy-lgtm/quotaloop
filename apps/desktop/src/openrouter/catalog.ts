@@ -13,9 +13,31 @@ const bounded = (value: unknown, max: number) =>
   typeof value === "string" ? value.slice(0, max) : "";
 
 const isZeroDecimal = (value: unknown) => {
-  if (typeof value === "number") return Number.isFinite(value) && value === 0;
+  if (typeof value === "number") return Object.is(value, 0);
   if (typeof value !== "string") return false;
-  return /^\+?(?:0+(?:\.0*)?|\.0+)(?:e[+-]?\d+)?$/i.test(value.trim());
+  // OpenRouter prices are decimal strings. Accept only a canonical zero; do
+  // not coerce malformed, negative, NaN, or infinity values to zero.
+  return /^(?:0+(?:\.0+)?|\.0+)(?:e[+-]?\d+)?$/i.test(value.trim());
+};
+
+const isDecimal = (value: unknown) => {
+  if (typeof value === "number") return Number.isFinite(value) && value >= 0;
+  if (typeof value !== "string") return false;
+  return /^(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim());
+};
+
+const isModelId = (value: string) =>
+  value.length <= 200 &&
+  value.includes("/") &&
+  !/[\s\\]/u.test(value) &&
+  !value.toLocaleLowerCase().startsWith("openrouter/");
+
+const isEmbeddingModel = (raw: Record<string, unknown>) => {
+  const architecture =
+    raw.architecture && typeof raw.architecture === "object"
+      ? (raw.architecture as Record<string, unknown>)
+      : null;
+  return architecture?.modality === "embedding";
 };
 
 export const isOpenRouterRouterAlias = (id: string) =>
@@ -25,7 +47,8 @@ export const canonicalFreePredicate = (raw: unknown) => {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
   const item = raw as Record<string, unknown>;
   const id = typeof item.id === "string" ? item.id.trim() : "";
-  if (!id || isOpenRouterRouterAlias(id)) return false;
+  if (!isModelId(id) || isOpenRouterRouterAlias(id) || isEmbeddingModel(item))
+    return false;
   const pricing =
     item.pricing && typeof item.pricing === "object"
       ? (item.pricing as Record<string, unknown>)
@@ -43,6 +66,19 @@ const excludedReason = (raw: unknown): OpenRouterExcludedModel["reason"] => {
   const id = typeof item.id === "string" ? item.id.trim() : "";
   if (!id) return "missing_id";
   if (isOpenRouterRouterAlias(id)) return "router_alias";
+  if (!isModelId(id) || isEmbeddingModel(item)) return "unsupported";
+  const pricing =
+    item.pricing && typeof item.pricing === "object"
+      ? (item.pricing as Record<string, unknown>)
+      : null;
+  if (
+    !pricing ||
+    pricing.prompt === undefined ||
+    pricing.completion === undefined
+  )
+    return "malformed";
+  if (!isDecimal(pricing.prompt) || !isDecimal(pricing.completion))
+    return "malformed";
   return "paid";
 };
 

@@ -6,7 +6,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::State;
 
 pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
@@ -55,6 +55,30 @@ fn sanitized_error(status: Option<StatusCode>) -> String {
         Some(status) => format!("OpenRouter request failed ({})", status.as_u16()),
         None => "OpenRouter request failed.".into(),
     }
+}
+
+fn benchmark_result_id(run_id: &str, model_id: &str) -> String {
+    format!("{run_id}:{model_id}")
+}
+
+fn manifest_allows_model(manifest: &Value, model_id: &str) -> bool {
+    if model_id.trim().is_empty()
+        || model_id.to_ascii_lowercase().starts_with("openrouter/")
+        || !model_id.contains('/')
+    {
+        return false;
+    }
+    manifest
+        .get("eligibleModelIds")
+        .and_then(Value::as_array)
+        .map(|ids| ids.iter().any(|id| id.as_str() == Some(model_id)))
+        .unwrap_or(false)
+}
+
+fn usage_number(usage: Option<&Value>, key: &str) -> Option<u64> {
+    usage
+        .and_then(|value| value.get(key))
+        .and_then(Value::as_u64)
 }
 
 fn validate_key(key: &str) -> Result<(), String> {
@@ -181,6 +205,19 @@ fn build_client() -> Result<Client, String> {
 
 async fn bounded_response(response: reqwest::Response) -> Result<Vec<u8>, String> {
     if !response.status().is_success() {
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            let retry_after_ms = response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(|seconds| seconds.saturating_mul(1000))
+                .unwrap_or(0)
+                .min(60_000);
+            return Err(format!(
+                "OpenRouter rate limit reached (429); retry-after-ms={retry_after_ms}"
+            ));
+        }
         return Err(sanitized_error(Some(response.status())));
     }
     let mut stream = response.bytes_stream();
@@ -274,15 +311,33 @@ pub async fn run_openrouter_benchmark_model(
     manifest: Value,
     state: State<'_, OpenRouterRuntimeState>,
 ) -> Result<Value, String> {
-    if !model_id.contains('/') || model_id.contains("openrouter/") || !model_id.ends_with(":free") {
+    if !manifest_allows_model(&manifest, &model_id) {
         return Err("Only allowlisted free OpenRouter models may run.".into());
     }
     let (key, _) = current_key()?;
     state.cancel_requested.store(false, Ordering::SeqCst);
-    let cases = manifest.get("cases").cloned().unwrap_or_else(|| json!([]));
+    let started_at = Instant::now();
+    let mut first_token_at: Option<Instant> = None;
+    let cases = manifest
+        .get("cases")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    Some(json!({
+                        "id": item.get("id")?.as_str()?,
+                        "kind": item.get("kind")?.as_str()?,
+                        "language": item.get("language")?.as_str()?,
+                        "prompt": item.get("prompt")?.as_str()?,
+                    }))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let prompt = format!(
         "Run each numbered task and return a JSON array with id and answer only. Tasks: {}",
-        cases
+        serde_json::to_string(&cases).unwrap_or_else(|_| "[]".to_string())
     );
     let response = build_client()?
         .post(format!("{OPENROUTER_BASE_URL}/chat/completions"))
@@ -297,12 +352,26 @@ pub async fn run_openrouter_benchmark_model(
             ],
             "temperature": 0,
             "max_tokens": 700,
-            "stream": true
+            "stream": true,
+            "stream_options": {"include_usage": true}
         }))
         .send()
         .await
         .map_err(|_| sanitized_error(None))?;
     if !response.status().is_success() {
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            let retry_after_ms = response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(|seconds| seconds.saturating_mul(1000))
+                .unwrap_or(0)
+                .min(60_000);
+            return Err(format!(
+                "OpenRouter rate limit reached (429); retry-after-ms={retry_after_ms}"
+            ));
+        }
         return Err(sanitized_error(Some(response.status())));
     }
     let mut stream = response.bytes_stream();
@@ -315,18 +384,44 @@ pub async fn run_openrouter_benchmark_model(
         if bytes.len() + chunk.len() > MAX_SSE_BYTES {
             return Err("OpenRouter response exceeded the safety limit.".into());
         }
+        if first_token_at.is_none() && !chunk.is_empty() {
+            first_token_at = Some(Instant::now());
+        }
         bytes.extend_from_slice(&chunk);
     }
     let parsed = parse_sse_events(&String::from_utf8_lossy(&bytes))?;
+    let total_latency_ms = started_at.elapsed().as_millis() as u64;
+    let ttft_ms =
+        first_token_at.map(|instant| instant.duration_since(started_at).as_millis() as u64);
+    let prompt_tokens = usage_number(parsed.usage.as_ref(), "prompt_tokens");
+    let completion_tokens = usage_number(parsed.usage.as_ref(), "completion_tokens");
+    let total_tokens = usage_number(parsed.usage.as_ref(), "total_tokens").or_else(|| {
+        prompt_tokens
+            .zip(completion_tokens)
+            .map(|(prompt, completion)| prompt + completion)
+    });
+    let throughput = completion_tokens.and_then(|tokens| {
+        (total_latency_ms > 0).then_some(tokens as f64 * 1000.0 / total_latency_ms as f64)
+    });
     Ok(json!({
-        "id": run_id,
+        "id": benchmark_result_id(&run_id, &model_id),
         "modelId": model_id,
         "modelName": model_id,
         "manifestId": manifest.get("manifestId").and_then(Value::as_str).unwrap_or("quotaloop.openrouter.free-benchmark.v1"),
         "catalogHash": manifest.get("catalogHash").and_then(Value::as_str).unwrap_or(""),
         "completedAt": chrono_like_now(),
         "outcome": "success",
-        "metrics": {"correctness": 0, "instructionFollowing": 0, "ttftMs": null, "totalLatencyMs": null, "throughputTokensPerSecond": null, "tokenUsage": {"prompt": null, "completion": null, "total": null}, "overallScore": 0},
+        "metrics": {
+            "correctness": 0,
+            "instructionFollowing": 0,
+            "trackScores": {"japanese": 0, "english": 0, "coding": 0},
+            "caseCount": 0,
+            "ttftMs": ttft_ms,
+            "totalLatencyMs": total_latency_ms,
+            "throughputTokensPerSecond": throughput,
+            "tokenUsage": {"prompt": prompt_tokens, "completion": completion_tokens, "total": total_tokens},
+            "overallScore": 0
+        },
         "caseScores": [],
         "answerText": parsed.text
     }))
@@ -367,5 +462,21 @@ mod tests {
     fn key_status_never_contains_a_full_secret() {
         let status = status_for(Some(("sk-or-abcdef123456".into(), KeySource::Environment)));
         assert_eq!(status.last_four.as_deref(), Some("3456"));
+    }
+
+    #[test]
+    fn result_ids_are_unique_per_model() {
+        assert_ne!(
+            benchmark_result_id("run-1", "vendor/a"),
+            benchmark_result_id("run-1", "vendor/b")
+        );
+    }
+
+    #[test]
+    fn native_runner_requires_the_authority_allowlist() {
+        let manifest = json!({"eligibleModelIds": ["vendor/model"]});
+        assert!(manifest_allows_model(&manifest, "vendor/model"));
+        assert!(!manifest_allows_model(&manifest, "vendor/other"));
+        assert!(!manifest_allows_model(&manifest, "openrouter/free"));
     }
 }

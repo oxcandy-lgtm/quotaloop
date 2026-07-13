@@ -505,7 +505,19 @@ export class DesktopAuthority {
           revision: this.revision,
         };
       case "openrouter_benchmark_resume_requested":
-        if (!this.openrouterRunner?.resume())
+        if (!callbacks.openrouterRunModel)
+          return {
+            requestId: request.requestId,
+            accepted: false,
+            revision: this.revision,
+            reason: "native_unavailable",
+          };
+        this.ensureOpenRouterRunner(callbacks.openrouterRunModel);
+        if (
+          !this.openrouterRunner?.resume(
+            this.persistent.openrouter.catalog ?? undefined,
+          )
+        )
           return {
             requestId: request.requestId,
             accepted: false,
@@ -548,13 +560,21 @@ export class DesktopAuthority {
       runModel,
       (result: OpenRouterBenchmarkResult) => {
         if (generation !== this.openrouterGeneration) return;
+        const existing = this.persistent.openrouter.benchmarkResults;
+        const id =
+          result.id &&
+          !existing.some(
+            (item) => item.id === result.id && item.modelId !== result.modelId,
+          )
+            ? result.id
+            : `${result.id || this.openrouterRunner?.getSnapshot().runId}:${result.modelId}`;
         const normalizedResult = {
           ...result,
+          id,
           catalogHash:
             this.persistent.openrouter.catalog?.catalogHash ??
             result.catalogHash,
         };
-        const existing = this.persistent.openrouter.benchmarkResults;
         if (!existing.some((item) => item.id === normalizedResult.id))
           this.persistent.openrouter.benchmarkResults = [
             normalizedResult,

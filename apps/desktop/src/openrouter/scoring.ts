@@ -43,14 +43,39 @@ export function scoreCase(testCase: OpenRouterBenchmarkCase, answer: string) {
   return { caseId: testCase.id, score: passed ? 100 : 0, passed };
 }
 
+const scoreInstructionFollowing = (
+  testCase: OpenRouterBenchmarkCase,
+  answer: string,
+) => {
+  const actual = normalizeAnswer(extractTextAnswer(answer));
+  const expected = normalizeAnswer(testCase.expectedAnswer);
+  if (!actual) return 0;
+  if (actual === expected) return 100;
+  const tokenHit = (testCase.expectedTokens ?? []).every((token) =>
+    actual.includes(normalizeAnswer(token)),
+  );
+  // Correct tokens with extra prose are useful but do not satisfy the
+  // manifest's "only" instruction. Keep this deterministic and bounded.
+  return tokenHit ? 50 : 0;
+};
+
+const average = (values: number[]) =>
+  values.length
+    ? values.reduce((total, value) => total + value, 0) / values.length
+    : 0;
+
+const rounded = (value: number) => Math.round(value * 100) / 100;
+
 export function scoreBenchmark(
   cases: OpenRouterBenchmarkCase[],
   answers: Record<string, string>,
   timing: {
-    ttftMs?: number | null;
-    totalLatencyMs?: number | null;
-    completionTokens?: number | null;
-    promptTokens?: number | null;
+    ttftMs?: number | null | undefined;
+    totalLatencyMs?: number | null | undefined;
+    completionTokens?: number | null | undefined;
+    promptTokens?: number | null | undefined;
+    totalTokens?: number | null | undefined;
+    throughputTokensPerSecond?: number | null | undefined;
   } = {},
 ): {
   caseScores: Array<{ caseId: string; score: number; passed: boolean }>;
@@ -65,28 +90,76 @@ export function scoreBenchmark(
     : 0;
   const totalLatencyMs = timing.totalLatencyMs ?? null;
   const completionTokens = timing.completionTokens ?? null;
+  const totalTokens = timing.totalTokens ?? null;
+  const trackScores = {
+    japanese: rounded(
+      average(
+        cases
+          .map((testCase, index) =>
+            testCase.kind === "japanese" ? caseScores[index]!.score : null,
+          )
+          .filter((score): score is number => score !== null),
+      ),
+    ),
+    english: rounded(
+      average(
+        cases
+          .map((testCase, index) =>
+            testCase.kind === "english" ? caseScores[index]!.score : null,
+          )
+          .filter((score): score is number => score !== null),
+      ),
+    ),
+    coding: rounded(
+      average(
+        cases
+          .map((testCase, index) =>
+            testCase.kind === "coding" ? caseScores[index]!.score : null,
+          )
+          .filter((score): score is number => score !== null),
+      ),
+    ),
+  };
+  const instructionFollowing = rounded(
+    average(
+      cases.map((testCase) =>
+        scoreInstructionFollowing(testCase, answers[testCase.id] ?? ""),
+      ),
+    ),
+  );
+  const presentTrackScores = [
+    ...new Set(cases.map((testCase) => testCase.kind)),
+  ].map((kind) => trackScores[kind]);
+  const trackAverage = rounded(average(presentTrackScores));
   return {
     caseScores,
     metrics: {
       correctness,
-      instructionFollowing: correctness,
+      instructionFollowing,
+      trackScores,
+      caseCount: cases.length,
       ttftMs: timing.ttftMs ?? null,
       totalLatencyMs,
       throughputTokensPerSecond:
-        completionTokens !== null && totalLatencyMs && totalLatencyMs > 0
+        timing.throughputTokensPerSecond ??
+        (completionTokens !== null && totalLatencyMs && totalLatencyMs > 0
           ? (completionTokens * 1000) / totalLatencyMs
-          : null,
+          : null),
       tokenUsage: {
         prompt: timing.promptTokens ?? null,
         completion: completionTokens,
         total:
-          timing.promptTokens !== null &&
-          timing.promptTokens !== undefined &&
-          completionTokens !== null
-            ? timing.promptTokens + completionTokens
-            : null,
+          totalTokens !== null
+            ? totalTokens
+            : timing.promptTokens !== null &&
+                timing.promptTokens !== undefined &&
+                completionTokens !== null
+              ? timing.promptTokens + completionTokens
+              : null,
       },
-      overallScore: correctness,
+      // Equal track weighting prevents a large track from dominating the
+      // result; instruction adherence is an explicit deterministic component.
+      overallScore: rounded(trackAverage * 0.7 + instructionFollowing * 0.3),
     },
   };
 }

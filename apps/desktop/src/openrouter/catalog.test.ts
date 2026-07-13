@@ -58,4 +58,40 @@ describe("OpenRouter free catalog", () => {
     expect(snapshot.excludedModels[0]?.reason).toBe("paid");
     expect(snapshot.catalogHash).toMatch(/^fnv1a:/);
   });
+  it("rejects malformed prices, unsupported ids, and embeddings", () => {
+    expect(
+      canonicalFreePredicate({
+        id: "vendor/model",
+        pricing: { prompt: "not-a-price", completion: "0" },
+      }),
+    ).toBe(false);
+    expect(
+      canonicalFreePredicate({
+        id: "vendor/model",
+        pricing: { prompt: "-0", completion: "0" },
+      }),
+    ).toBe(false);
+    expect(
+      canonicalFreePredicate({
+        id: "vendor/model",
+        pricing: { prompt: "0", completion: "0" },
+        architecture: { modality: "embedding" },
+      }),
+    ).toBe(false);
+    expect(
+      normalizeOpenRouterCatalog({
+        data: [
+          {
+            id: "vendor/model",
+            pricing: { prompt: "not-a-price", completion: "0" },
+          },
+          {
+            id: "embedding/model",
+            pricing: { prompt: "0", completion: "0" },
+            architecture: { modality: "embedding" },
+          },
+        ],
+      }).excludedModels.map((item) => item.reason),
+    ).toEqual(["unsupported", "malformed"]);
+  });
 });
