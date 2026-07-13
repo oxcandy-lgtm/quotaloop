@@ -130,33 +130,53 @@ fn get_platform_info() -> String {
 
 #[tauri::command]
 fn set_automation_paused(app: tauri::AppHandle, paused: bool) -> bool {
-    let _ = app.emit("automation-state-changed", paused);
+    let _ = app.emit_to("popover", "automation-state-changed", paused);
     paused
 }
 
 #[tauri::command]
 fn request_policy_update(app: tauri::AppHandle, policy: serde_json::Value) {
-    let _ = app.emit("automation-policy-requested", policy);
+    let _ = app.emit_to("popover", "automation-policy-requested", policy);
 }
 
 #[tauri::command]
 fn request_clear_local_data(app: tauri::AppHandle) {
-    let _ = app.emit("clear-local-data-requested", ());
+    let _ = app.emit_to("popover", "clear-local-data-requested", ());
+}
+
+#[tauri::command]
+fn request_refresh_providers(app: tauri::AppHandle) {
+    let _ = app.emit_to("popover", "refresh-providers", ());
+}
+
+#[tauri::command]
+fn request_model_lab_run(app: tauri::AppHandle) {
+    let _ = app.emit_to("popover", "model-lab-run-requested", ());
+}
+
+#[tauri::command]
+fn request_service_preference(app: tauri::AppHandle, preference: serde_json::Value) {
+    let _ = app.emit_to("popover", "service-preference-requested", preference);
+}
+
+#[tauri::command]
+fn broadcast_service_preferences(app: tauri::AppHandle, preferences: serde_json::Value) {
+    let _ = app.emit_to("dashboard", "service-preferences-changed", preferences);
 }
 
 #[tauri::command]
 fn broadcast_policy_state(app: tauri::AppHandle, policy: serde_json::Value) {
-    let _ = app.emit("automation-policy-changed", policy);
+    let _ = app.emit_to("dashboard", "automation-policy-changed", policy);
 }
 
 #[tauri::command]
 fn broadcast_history_state(app: tauri::AppHandle, history: serde_json::Value) {
-    let _ = app.emit("history-changed", history);
+    let _ = app.emit_to("dashboard", "history-changed", history);
 }
 
 #[tauri::command]
 fn broadcast_provider_state(app: tauri::AppHandle, providers: serde_json::Value) {
-    let _ = app.emit("provider-state-changed", providers);
+    let _ = app.emit_to("dashboard", "provider-state-changed", providers);
 }
 
 #[tauri::command]
@@ -165,8 +185,13 @@ fn show_main_window(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn open_dashboard(app: tauri::AppHandle) {
+fn open_dashboard(app: tauri::AppHandle, section: Option<String>) {
     show_window(&app, "dashboard");
+    let _ = app.emit_to(
+        "dashboard",
+        "section-selected",
+        section.unwrap_or_else(|| "overview".into()),
+    );
 }
 
 #[tauri::command]
@@ -220,10 +245,10 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" => show_window(app, "dashboard"),
             "refresh" => {
-                let _ = app.emit("refresh-providers", ());
+                let _ = app.emit_to("popover", "refresh-providers", ());
             }
             "pause" => {
-                let _ = app.emit("automation-pause-requested", ());
+                let _ = app.emit_to("popover", "automation-pause-requested", ());
             }
             "quit" => app.exit(0),
             _ => {}
@@ -258,6 +283,10 @@ pub fn run() {
             set_automation_paused,
             request_policy_update,
             request_clear_local_data,
+            request_refresh_providers,
+            request_model_lab_run,
+            request_service_preference,
+            broadcast_service_preferences,
             broadcast_policy_state,
             broadcast_history_state,
             broadcast_provider_state,

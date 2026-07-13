@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { emit, listen } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import {
   isPermissionGranted,
   requestPermission,
@@ -17,20 +17,20 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { MockCodexProvider } from "@quotaloop/providers";
-import { LocalScheduler } from "@quotaloop/automation";
 import type {
+  AIServicePreference,
   ExecutionRecord,
   QuotaAutomationPolicy,
 } from "@quotaloop/contracts";
 import { automationPolicySchema } from "@quotaloop/contracts";
-import {
-  DesktopAutomationController,
-  loadHistory,
-  loadPolicy,
-} from "./automation-controller";
+import { loadHistory, loadPolicy } from "./automation-controller";
 import { resolveDesktopSurface } from "./surface";
 import { shouldDeliverNotification } from "./notification-controller";
+import { ProviderStatus } from "@quotaloop/ui";
+import { DesktopAuthority } from "./desktop-authority";
 import "./styles.css";
+
+type PopoverTab = "quota" | "modelLab";
 
 type DetectionState =
   | "installed"
@@ -52,6 +52,16 @@ const providers = [
   { id: "opencode", name: "OpenCode" },
 ];
 const demo = new MockCodexProvider();
+const defaultServicePreferences = (): AIServicePreference[] =>
+  providers.map((provider) => ({
+    serviceId: provider.id,
+    enabled: true,
+    visibleInQuota: true,
+    visibleInModelLab: true,
+    allowCatalogAccess: true,
+    allowBenchmarkRequests: provider.id === "codex",
+    favorite: provider.id === "codex",
+  }));
 function PopoverApp() {
   const [detections, setDetections] = useState<Record<string, Detection>>(() =>
     Object.fromEntries(
@@ -59,6 +69,23 @@ function PopoverApp() {
     ),
   );
   const [refreshing, setRefreshing] = useState(false);
+  const [activeTab, setActiveTab] = useState<PopoverTab>("quota");
+  const [modelLabStatus, setModelLabStatus] = useState<
+    "idle" | "running" | "completed"
+  >("idle");
+  const [servicePreferences, setServicePreferences] = useState<
+    AIServicePreference[]
+  >(() => {
+    try {
+      return (
+        JSON.parse(
+          localStorage.getItem("quotaloop.desktop.ai-services") ?? "null",
+        ) ?? defaultServicePreferences()
+      );
+    } catch {
+      return defaultServicePreferences();
+    }
+  });
   const [history, setHistory] = useState<History[]>(
     () => loadHistory() as History[],
   );
@@ -79,8 +106,8 @@ function PopoverApp() {
   const [notificationPermission, setNotificationPermission] = useState<
     "unknown" | "granted" | "denied" | "unavailable"
   >("unknown");
-  const controllerRef = useRef(new DesktopAutomationController(demo));
-  const schedulerRef = useRef<LocalScheduler | null>(null);
+  const authorityRef = useRef(new DesktopAuthority(demo));
+  const controllerRef = useRef(authorityRef.current.controller);
   const refresh = useCallback(async () => {
     setRefreshing(true);
     const results = await Promise.all(
@@ -113,13 +140,38 @@ function PopoverApp() {
     updatePolicy({ ...policyRef.current, paused: next });
   };
   const resetLocalData = () => {
-    const result = controllerRef.current.resetToSafeDefaults();
+    setModelLabStatus("idle");
+    const result = authorityRef.current.reset();
     policyRef.current = result.policy;
     setPolicyState(result.policy);
     setHistory([]);
+    setServicePreferences(defaultServicePreferences());
     setNotice("Local data cleared; automation is OFF.");
     void invoke("broadcast_policy_state", { policy: result.policy });
     void invoke("broadcast_history_state", { history: [] });
+    void invoke("broadcast_service_preferences", {
+      preferences: defaultServicePreferences(),
+    });
+  };
+  const runModelLab = () => {
+    setModelLabStatus("running");
+    void authorityRef.current.modelLab
+      .run(
+        async () =>
+          new Promise<void>((resolve) => window.setTimeout(resolve, 250)),
+      )
+      .then((result) => {
+        if (result === "completed") setModelLabStatus("completed");
+        else if (result === "discarded") setModelLabStatus("idle");
+      });
+  };
+  const updateServicePreference = (preference: AIServicePreference) => {
+    const next = servicePreferences.map((item) =>
+      item.serviceId === preference.serviceId ? preference : item,
+    );
+    setServicePreferences(next);
+    localStorage.setItem("quotaloop.desktop.ai-services", JSON.stringify(next));
+    void invoke("broadcast_service_preferences", { preferences: next });
   };
   useEffect(() => {
     void isPermissionGranted()
@@ -157,44 +209,45 @@ function PopoverApp() {
       "clear-local-data-requested",
       resetLocalData,
     );
+    const modelLabUnlisten = listen("model-lab-run-requested", runModelLab);
+    const servicePreferenceUnlisten = listen<AIServicePreference>(
+      "service-preference-requested",
+      (event) => updateServicePreference(event.payload),
+    );
     return () => {
       void refreshUnlisten.then((unlisten) => unlisten());
       void pauseUnlisten.then((unlisten) => unlisten());
       void pauseRequestUnlisten.then((unlisten) => unlisten());
       void policyRequestUnlisten.then((unlisten) => unlisten());
       void clearDataUnlisten.then((unlisten) => unlisten());
+      void modelLabUnlisten.then((unlisten) => unlisten());
+      void servicePreferenceUnlisten.then((unlisten) => unlisten());
     };
   }, [refresh]);
   useEffect(() => {
-    const scheduler = new LocalScheduler(async () => {
-      const result = await controllerRef.current.evaluateAndRun();
-      if (result.record) {
-        setHistory(controllerRef.current.records as History[]);
-        void invoke("broadcast_history_state", {
-          history: controllerRef.current.records,
-        });
-        await refresh();
-        void notifyCompletion(result.eventKey);
-      }
-    }, 60_000);
-    schedulerRef.current = scheduler;
-    scheduler.start();
+    authorityRef.current.setOnRecord(async (eventKey) => {
+      setHistory(controllerRef.current.records as History[]);
+      void invoke("broadcast_history_state", {
+        history: controllerRef.current.records,
+      });
+      await refresh();
+      void notifyCompletion(eventKey);
+    });
+    authorityRef.current.start();
     return () => {
-      scheduler.stop();
-      schedulerRef.current = null;
+      authorityRef.current.stop();
     };
   }, [refresh]);
   useEffect(() => {
     const onVisibility = () => {
-      if (document.visibilityState === "visible")
-        schedulerRef.current?.resume();
+      if (document.visibilityState === "visible") authorityRef.current.resume();
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, []);
   const runDemo = async () => {
     setNotice(null);
-    const result = await controllerRef.current.evaluateAndRun(new Date(), true);
+    const result = await authorityRef.current.runManual(new Date());
     if (result.record) {
       setHistory(controllerRef.current.records as History[]);
       void invoke("broadcast_history_state", {
@@ -256,142 +309,221 @@ function PopoverApp() {
       JSON.stringify({ enabled: next, actionCompleted: true }),
     );
   };
-  const installedCount = Object.values(detections).filter(
-    (d) => d.state === "installed",
-  ).length;
   return (
     <main className="popover">
-      <header>
-        <div className="mark">
-          <Gauge />
+      <header className="tab-header">
+        <div className="tab-list" role="tablist" aria-label="QuotaLoop views">
+          <button
+            role="tab"
+            aria-selected={activeTab === "quota"}
+            className={activeTab === "quota" ? "tab active" : "tab"}
+            onClick={() => setActiveTab("quota")}
+          >
+            QUOTA
+          </button>
+          <button
+            role="tab"
+            aria-selected={activeTab === "modelLab"}
+            className={activeTab === "modelLab" ? "tab active" : "tab"}
+            onClick={() => setActiveTab("modelLab")}
+          >
+            MODEL LAB
+          </button>
         </div>
-        <strong>QuotaLoop</strong>
-        <span className="online">LOCAL AGENT</span>
-      </header>
-      <section className="overall">
-        <span>ACTUAL DETECTION</span>
-        <strong>
-          {installedCount} provider{installedCount === 1 ? "" : "s"} installed
-        </strong>
-        <small>
-          {refreshing ? "Refreshing…" : "Fixed allowlist · no shell"}
-        </small>
-      </section>
-      <section className="provider demo-provider">
-        <div>
-          <b>Codex Demo</b>
-          <span>DEMO</span>
-        </div>
-        <p>
-          <label>
-            Session <strong>72%</strong>
-          </label>
-          <i>
-            <em style={{ width: "72%" }} />
-          </i>
-        </p>
-        <p>
-          <label>
-            Weekly <strong>64%</strong>
-          </label>
-          <i>
-            <em style={{ width: "64%" }} />
-          </i>
-        </p>
-        <small>Quota values are synthetic demo data.</small>
-      </section>
-      <div className="provider-list">
-        {providers.map((provider) => (
-          <ProviderRow
-            key={provider.id}
-            provider={provider}
-            detection={detections[provider.id]!}
-          />
-        ))}
-      </div>
-      <section className="automation">
-        <div>
-          <span>AUTOMATION</span>
-          <strong>
-            <Pause />
-            {policy.paused
-              ? "Paused"
-              : policy.enabled
-                ? "Enabled"
-                : "Off by default"}
-          </strong>
-        </div>
-        <small>Only the synthetic Demo action can run in this beta.</small>
-      </section>
-      {notice && (
-        <p role="status" className="notice">
-          <ShieldCheck />
-          {notice}
-        </p>
-      )}
-      <nav>
-        <button onClick={() => void refresh()} disabled={refreshing}>
-          <RefreshCw />
-          {refreshing ? "Checking…" : "Refresh"}
-        </button>
-        <button onClick={() => void runDemo()}>
-          <Play />
-          Run Demo
-        </button>
-        <button onClick={() => void togglePause()}>
-          <Pause />
-          {policy.paused ? "Resume" : "Pause"}
-        </button>
         <button
-          onClick={() => updatePolicy({ ...policy, enabled: !policy.enabled })}
-        >
-          {policy.enabled ? "Disable automation" : "Enable automation"}
-        </button>
-        <button
-          className="primary"
-          onClick={() => void invoke("open_dashboard")}
+          className="settings-tab"
+          aria-label="Settings"
+          onClick={() => void invoke("open_dashboard", { section: "settings" })}
         >
           <Settings />
-          Dashboard
         </button>
-        <button onClick={() => void testNotification()}>
-          <ShieldCheck />
-          Test notification
-        </button>
-        <button onClick={toggleNotifications}>
-          {notificationsEnabled
-            ? `Notifications: ${notificationPermission}`
-            : "Enable notifications"}
-        </button>
-      </nav>
-      <section className="history">
-        <small>
-          Local history · {history.length} record
-          {history.length === 1 ? "" : "s"}
-        </small>
-        {history.slice(0, 2).map((item) => (
-          <div key={item.id}>
-            <strong>
-              {item.outcome === "success" ? "Demo complete" : "Demo failed"}
-            </strong>
-            <span>{new Date(item.completedAt).toLocaleTimeString()}</span>
+      </header>
+      {activeTab === "modelLab" ? (
+        <ModelLabPopover status={modelLabStatus} />
+      ) : (
+        <>
+          <section className="provider demo-provider">
+            <div>
+              <b>Codex Demo</b>
+              <span>DEMO</span>
+            </div>
+            <p>
+              <label>
+                Session <strong>72%</strong>
+              </label>
+              <i>
+                <em style={{ width: "72%" }} />
+              </i>
+            </p>
+            <p>
+              <label>
+                Weekly <strong>64%</strong>
+              </label>
+              <i>
+                <em style={{ width: "64%" }} />
+              </i>
+            </p>
+            <small>Quota values are synthetic demo data.</small>
+          </section>
+          <div className="provider-list">
+            {providers.map((provider) => (
+              <ProviderRow
+                key={provider.id}
+                provider={provider}
+                detection={detections[provider.id]!}
+              />
+            ))}
           </div>
-        ))}
-      </section>
+          <section className="automation">
+            <div>
+              <span>AUTOMATION</span>
+              <strong>
+                <Pause />
+                {policy.paused
+                  ? "Paused"
+                  : policy.enabled
+                    ? "Enabled"
+                    : "Off by default"}
+              </strong>
+            </div>
+            <small>Only the synthetic Demo action can run in this beta.</small>
+          </section>
+          {notice && (
+            <p role="status" className="notice">
+              <ShieldCheck />
+              {notice}
+            </p>
+          )}
+          <nav>
+            <button onClick={() => void refresh()} disabled={refreshing}>
+              <RefreshCw />
+              {refreshing ? "Checking…" : "Refresh"}
+            </button>
+            <button onClick={() => void runDemo()}>
+              <Play />
+              Run Demo
+            </button>
+            <button onClick={() => void togglePause()}>
+              <Pause />
+              {policy.paused ? "Resume" : "Pause"}
+            </button>
+            <button
+              onClick={() =>
+                updatePolicy({ ...policy, enabled: !policy.enabled })
+              }
+            >
+              {policy.enabled ? "Disable automation" : "Enable automation"}
+            </button>
+            <button
+              className="primary"
+              onClick={() => void invoke("open_dashboard")}
+            >
+              <Settings />
+              Dashboard
+            </button>
+            <button onClick={() => void testNotification()}>
+              <ShieldCheck />
+              Test notification
+            </button>
+            <button onClick={toggleNotifications}>
+              {notificationsEnabled
+                ? `Notifications: ${notificationPermission}`
+                : "Enable notifications"}
+            </button>
+          </nav>
+          <section className="history">
+            <small>
+              Local history · {history.length} record
+              {history.length === 1 ? "" : "s"}
+            </small>
+            {history.slice(0, 2).map((item) => (
+              <div key={item.id}>
+                <strong>
+                  {item.outcome === "success" ? "Demo complete" : "Demo failed"}
+                </strong>
+                <span>{new Date(item.completedAt).toLocaleTimeString()}</span>
+              </div>
+            ))}
+          </section>
+        </>
+      )}
     </main>
   );
 }
 
+function ModelLabPopover({
+  status,
+}: {
+  status: "idle" | "running" | "completed";
+}) {
+  return (
+    <section className="model-lab-popover">
+      <p className="eyebrow">MODEL LAB · SYNTHETIC</p>
+      <h2>Local model summary</h2>
+      <div className="lab-metrics">
+        <strong>
+          24<small>Free models</small>
+        </strong>
+        <strong>
+          3<small>New today</small>
+        </strong>
+        <strong>
+          12<small>Measured</small>
+        </strong>
+      </div>
+      <p className="muted">
+        Catalog and benchmark values are synthetic fixtures. No external
+        requests.
+      </p>
+      <section className="provider demo-provider">
+        <b>Latest synthetic result</b>
+        <p>
+          Demo Model A <strong>86</strong>
+        </p>
+        <p>
+          Demo Model B <strong>81</strong>
+        </p>
+        <p>
+          Demo Model C <strong>77</strong>
+        </p>
+      </section>
+      <p className="model-lab-status">
+        {status === "running"
+          ? "Synthetic benchmark running…"
+          : status === "completed"
+            ? "Synthetic benchmark complete."
+            : "Ready for a manual run."}
+      </p>
+      <button
+        className="primary"
+        onClick={() => void invoke("request_model_lab_run")}
+      >
+        Run synthetic benchmark
+      </button>
+      <button
+        onClick={() => void invoke("open_dashboard", { section: "modelLab" })}
+      >
+        Open full results
+      </button>
+    </section>
+  );
+}
+
 function DashboardApp() {
+  const [section, setSection] = useState("overview");
   const [policy, setPolicy] = useState(() => loadPolicy());
   const [history, setHistory] = useState<History[]>(
     () => loadHistory() as History[],
   );
   const [detections, setDetections] = useState<Record<string, Detection>>({});
+  const [servicePreferences, setServicePreferences] = useState<
+    AIServicePreference[]
+  >(() => defaultServicePreferences());
   const [refreshing, setRefreshing] = useState(false);
   useEffect(() => {
-    void emit("refresh-providers");
+    void invoke("request_refresh_providers");
     const listeners = Promise.all([
+      listen<string>("section-selected", (event) => setSection(event.payload)),
       listen<QuotaAutomationPolicy>("automation-policy-changed", (event) =>
         setPolicy(event.payload),
       ),
@@ -405,6 +537,9 @@ function DashboardApp() {
           ),
         ),
       ),
+      listen<AIServicePreference[]>("service-preferences-changed", (event) =>
+        setServicePreferences(event.payload),
+      ),
     ]);
     return () => {
       void listeners.then((items) => items.forEach((item) => item()));
@@ -412,11 +547,13 @@ function DashboardApp() {
   }, []);
   const refresh = async () => {
     setRefreshing(true);
-    await emit("refresh-providers");
+    await invoke("request_refresh_providers");
     setRefreshing(false);
   };
   const updatePolicy = (next: QuotaAutomationPolicy) =>
     void invoke("request_policy_update", { policy: next });
+  const updateServicePreference = (preference: AIServicePreference) =>
+    void invoke("request_service_preference", { preference });
   const detectedCount = Object.values(detections).filter(
     (item) => item.state === "installed",
   ).length;
@@ -429,6 +566,27 @@ function DashboardApp() {
         <strong>QuotaLoop Dashboard</strong>
         <span className="online">LOCAL AGENT</span>
       </header>
+      <p className="dashboard-section-label">{section.toUpperCase()}</p>
+      <nav className="dashboard-nav" aria-label="Dashboard sections">
+        {[
+          "overview",
+          "providers",
+          "modelLab",
+          "automation",
+          "history",
+          "signals",
+          "subscriptions",
+          "settings",
+        ].map((item) => (
+          <button
+            key={item}
+            className={section === item ? "active" : ""}
+            onClick={() => setSection(item)}
+          >
+            {item}
+          </button>
+        ))}
+      </nav>
       <section className="dashboard-grid">
         <section className="dashboard-card">
           <h2>Overview</h2>
@@ -441,10 +599,15 @@ function DashboardApp() {
         <section className="dashboard-card">
           <h2>Providers</h2>
           {providers.map((provider) => (
-            <p key={provider.id}>
-              <b>{provider.name}</b>:{" "}
-              {detections[provider.id]?.state ?? "not checked"}
-            </p>
+            <ProviderStatus
+              key={provider.id}
+              name={provider.name}
+              state={detections[provider.id]?.state ?? "not checked"}
+              detail={
+                detections[provider.id]?.version ??
+                "Quota unavailable · detection only"
+              }
+            />
           ))}
           <button onClick={() => void refresh()} disabled={refreshing}>
             {refreshing ? "Refreshing…" : "Refresh providers"}
@@ -519,6 +682,26 @@ function DashboardApp() {
           <button onClick={() => void invoke("request_clear_local_data")}>
             Clear local data
           </button>
+          <h3>AI Services</h3>
+          {servicePreferences.map((preference) => (
+            <label key={preference.serviceId} className="service-toggle">
+              <span>{preference.serviceId}</span>
+              <input
+                type="checkbox"
+                checked={preference.enabled}
+                onChange={(event) =>
+                  updateServicePreference({
+                    ...preference,
+                    enabled: event.target.checked,
+                  })
+                }
+              />
+            </label>
+          ))}
+          <p>
+            Credential support unavailable. Secure storage is not connected in
+            this build.
+          </p>
         </section>
       </section>
     </main>

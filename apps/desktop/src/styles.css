@@ -15,6 +15,8 @@ body {
   background: #111820;
   padding: 20px;
   color: #edf3fa;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 header {
   display: flex;
@@ -22,6 +24,35 @@ header {
   gap: 9px;
   padding-bottom: 18px;
   border-bottom: 1px solid #26313d;
+}
+.tab-header {
+  justify-content: space-between;
+  padding-bottom: 10px;
+}
+.tab-list {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+}
+.tab,
+.settings-tab {
+  border: 0;
+  background: transparent;
+  padding: 7px 8px;
+  color: #8491a1;
+  font: 600 10px monospace;
+}
+.tab.active {
+  color: #edf3fa;
+  background: #1d3454;
+  border-bottom: 2px solid #4b8cf7;
+}
+.settings-tab {
+  color: #edf3fa;
+  padding: 7px;
+}
+.settings-tab svg {
+  width: 14px;
 }
 .mark {
   width: 29px;
@@ -197,6 +228,44 @@ button:disabled {
 .history span {
   color: #8491a1;
 }
+.model-lab-popover {
+  display: grid;
+  gap: 12px;
+  padding-top: 18px;
+}
+.model-lab-popover h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.eyebrow {
+  margin: 0;
+  font: 500 9px monospace;
+  letter-spacing: 0.1em;
+  color: #7f8b9a;
+}
+.muted,
+.model-lab-status {
+  color: #9aa6b5;
+  font-size: 11px;
+}
+.lab-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+}
+.lab-metrics strong {
+  background: #18212b;
+  border: 1px solid #293543;
+  border-radius: 8px;
+  padding: 10px 7px;
+  font-size: 18px;
+}
+.lab-metrics small {
+  display: block;
+  color: #8491a1;
+  font-size: 8px;
+  font-weight: 400;
+}
 .dashboard-surface {
   min-height: 100vh;
   padding: 28px;
@@ -210,6 +279,48 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+}
+.dashboard-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.dashboard-nav button {
+  font-size: 10px;
+  padding: 6px 9px;
+}
+.dashboard-nav button.active {
+  background: #3378ef;
+  color: #fff;
+}
+.dashboard-section-label {
+  color: #7f8b9a;
+  font: 500 10px monospace;
+  letter-spacing: 0.12em;
+}
+.provider-status {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid #26313d;
+}
+.provider-status span {
+  color: #67a0ff;
+  font-size: 11px;
+}
+.provider-status small {
+  grid-column: 1 / -1;
+  color: #8491a1;
+  font-size: 10px;
+}
+.service-toggle {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 0;
+  color: #c8d2dd;
+  font-size: 11px;
 }
 .dashboard-card {
   border: 1px solid #2d3a48;
