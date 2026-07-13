@@ -8,6 +8,12 @@
 }
 body {
   margin: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+#root {
+  max-width: 100%;
+  overflow-x: hidden;
 }
 .popover {
   width: 380px;
@@ -15,6 +21,17 @@ body {
   background: #111820;
   padding: 20px;
   color: #edf3fa;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.popover,
+.popover *,
+.popover *::before,
+.popover *::after {
+  box-sizing: border-box;
+}
+.popover * {
+  min-width: 0;
 }
 header {
   display: flex;
@@ -22,6 +39,54 @@ header {
   gap: 9px;
   padding-bottom: 18px;
   border-bottom: 1px solid #26313d;
+}
+.tab-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 10px;
+}
+.popover-brand {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.popover-brand .mark {
+  flex: 0 0 auto;
+}
+.popover-brand strong {
+  min-width: 0;
+  font-size: 11px;
+}
+.tab-list {
+  display: flex;
+  gap: 4px;
+  justify-self: center;
+  min-width: 0;
+}
+.tab,
+.settings-tab {
+  border: 0;
+  background: transparent;
+  padding: 7px 8px;
+  color: #8491a1;
+  font: 600 10px monospace;
+  white-space: nowrap;
+}
+.tab.active {
+  color: #edf3fa;
+  background: #1d3454;
+  border-bottom: 2px solid #4b8cf7;
+}
+.settings-tab {
+  color: #edf3fa;
+  padding: 7px;
+}
+.settings-tab svg {
+  width: 14px;
 }
 .mark {
   width: 29px;
@@ -154,6 +219,41 @@ nav {
   border-top: 1px solid #26313d;
   padding-top: 15px;
 }
+.popover fieldset,
+.popover .model-selection,
+.popover .model-lab-popover,
+.popover .provider,
+.popover .lab-metrics,
+.popover nav {
+  width: 100%;
+  max-width: 100%;
+  min-inline-size: 0;
+}
+.popover fieldset,
+.popover .model-selection {
+  margin-inline: 0;
+}
+.popover .model-selection label,
+.popover .model-selection legend,
+.popover .provider,
+.popover .provider * {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.popover .model-selection {
+  padding: 10px;
+}
+.popover .model-selection label {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  line-height: 1.3;
+}
+.popover .model-selection input {
+  flex: 0 0 auto;
+  margin: 2px 0 0;
+}
 button {
   border: 1px solid #34404d;
   background: #18212b;
@@ -197,7 +297,54 @@ button:disabled {
 .history span {
   color: #8491a1;
 }
+.model-lab-popover {
+  display: grid;
+  gap: 12px;
+  padding-top: 18px;
+}
+.model-lab-popover > * {
+  min-width: 0;
+}
+.model-lab-popover h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.eyebrow {
+  margin: 0;
+  font: 500 9px monospace;
+  letter-spacing: 0.1em;
+  color: #7f8b9a;
+}
+.muted,
+.model-lab-status {
+  color: #9aa6b5;
+  font-size: 11px;
+}
+.lab-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+}
+.lab-metrics > strong {
+  min-width: 0;
+}
+.lab-metrics strong {
+  background: #18212b;
+  border: 1px solid #293543;
+  border-radius: 8px;
+  padding: 10px 7px;
+  font-size: 18px;
+}
+.lab-metrics small {
+  display: block;
+  color: #8491a1;
+  font-size: 8px;
+  font-weight: 400;
+}
 .dashboard-surface {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
   min-height: 100vh;
   padding: 28px;
   background: #101820;
@@ -211,12 +358,72 @@ button:disabled {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
 }
+.dashboard-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.dashboard-nav button {
+  font-size: 10px;
+  padding: 6px 9px;
+}
+.dashboard-nav button.active {
+  background: #3378ef;
+  color: #fff;
+}
+.dashboard-section-label {
+  color: #7f8b9a;
+  font: 500 10px monospace;
+  letter-spacing: 0.12em;
+}
+.provider-status {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid #26313d;
+}
+.provider-status span {
+  color: #67a0ff;
+  font-size: 11px;
+}
+.provider-status small {
+  grid-column: 1 / -1;
+  color: #8491a1;
+  font-size: 10px;
+}
+.service-toggle {
+  display: flex;
+  justify-content: space-between;
+  padding: 5px 0;
+  color: #c8d2dd;
+  font-size: 11px;
+}
 .dashboard-card {
   border: 1px solid #2d3a48;
   border-radius: 12px;
   padding: 18px;
   background: #18212b;
   min-height: 130px;
+}
+.dashboard-grid[data-active="overview"]
+  > section:not([data-section="overview"]) {
+  display: none;
+}
+.dashboard-grid[data-active="providers"]
+  > section:not([data-section="providers"]),
+.dashboard-grid[data-active="model_lab"]
+  > section:not([data-section="model_lab"]),
+.dashboard-grid[data-active="automation"]
+  > section:not([data-section="automation"]),
+.dashboard-grid[data-active="history"] > section:not([data-section="history"]),
+.dashboard-grid[data-active="signals"] > section:not([data-section="signals"]),
+.dashboard-grid[data-active="subscriptions"]
+  > section:not([data-section="subscriptions"]),
+.dashboard-grid[data-active="settings"]
+  > section:not([data-section="settings"]) {
+  display: none;
 }
 .dashboard-card h2 {
   margin: 0 0 10px;
@@ -226,4 +433,141 @@ button:disabled {
   color: #9aa8b8;
   font-size: 12px;
   line-height: 1.5;
+}
+.settings-surface {
+  width: 100%;
+  max-width: 100%;
+  min-height: 100vh;
+  padding: 20px;
+  overflow: hidden;
+  background: #101820;
+  color: #dfe7ef;
+}
+.settings-surface * {
+  min-width: 0;
+  max-width: 100%;
+}
+.settings-header {
+  margin-bottom: 16px;
+}
+.settings-layout {
+  display: grid;
+  grid-template-columns: 145px minmax(0, 1fr);
+  gap: 18px;
+  min-width: 0;
+  height: calc(100vh - 84px);
+}
+.settings-sidebar {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+}
+.settings-sidebar button {
+  justify-content: flex-start;
+  min-width: 0;
+  padding: 8px 9px;
+  text-align: left;
+  white-space: normal;
+}
+.settings-sidebar button.active {
+  background: #3378ef;
+  color: #fff;
+}
+.settings-content {
+  min-width: 0;
+  max-width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+}
+.settings-pane {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+}
+.settings-pane h2,
+.settings-pane h3 {
+  margin: 0;
+}
+.settings-pane p {
+  margin: 0;
+  color: #9aa8b8;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.settings-pane button,
+.settings-pane input,
+.settings-pane fieldset {
+  min-width: 0;
+  max-width: 100%;
+}
+.settings-pane > label {
+  display: grid;
+  gap: 5px;
+  color: #c8d2dd;
+  font-size: 11px;
+}
+.settings-pane > label input {
+  width: 100%;
+}
+.settings-option-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+}
+.settings-option-list > button {
+  width: 100%;
+}
+.settings-service {
+  width: 100%;
+  margin: 0;
+  padding: 9px;
+  border: 1px solid #2d3a48;
+  border-radius: 8px;
+}
+.settings-service legend {
+  padding: 0 4px;
+  color: #edf3fa;
+  font-size: 11px;
+}
+.settings-option-list > label,
+.settings-toggle-row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 4px 0;
+  color: #c8d2dd;
+  font-size: 11px;
+}
+.settings-option-list input,
+.settings-toggle-row input {
+  flex: 0 0 auto;
+}
+.settings-option-list > label span,
+.settings-toggle-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.settings-subscription-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 8px;
+  min-width: 0;
+  padding: 8px 0;
+  border-bottom: 1px solid #26313d;
+}
+.settings-subscription-row span {
+  min-width: 0;
+  color: #9aa8b8;
+  font-size: 10px;
+}
+.settings-subscription-row button {
+  grid-row: span 2;
 }

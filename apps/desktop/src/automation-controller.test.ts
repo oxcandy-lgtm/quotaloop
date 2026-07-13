@@ -4,6 +4,7 @@ import {
   loadHistory,
   loadPolicy,
 } from "./automation-controller";
+import { MockCodexProvider } from "@quotaloop/providers";
 
 const storage = new Map<string, string>();
 Object.defineProperty(globalThis, "localStorage", {
@@ -85,5 +86,35 @@ describe("DesktopAutomationController", () => {
     expect(loadPolicy().enabled).toBe(false);
     const blocked = await controller.evaluateAndRun(new Date());
     expect(blocked.decision.reason).toBe("disabled");
+  });
+  it("discards a completion that was in flight when reset was requested", async () => {
+    const provider = new MockCodexProvider();
+    let finish!: (value: {
+      ok: boolean;
+      providerId: string;
+      completedAt: string;
+      summary: string;
+    }) => void;
+    provider.runAction = () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      });
+    const controller = new DesktopAutomationController(provider);
+    controller.setPolicy({ ...controller.currentPolicy, enabled: true });
+    const pending = controller.evaluateAndRun(new Date());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    controller.resetToSafeDefaults();
+    finish({
+      ok: true,
+      providerId: provider.id,
+      completedAt: new Date().toISOString(),
+      summary: "finished after reset",
+    });
+
+    const result = await pending;
+    expect(result.record).toBeUndefined();
+    expect(controller.records).toEqual([]);
+    expect(loadHistory()).toEqual([]);
+    expect(controller.currentPolicy.enabled).toBe(false);
   });
 });

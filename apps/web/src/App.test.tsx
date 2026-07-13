@@ -138,7 +138,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("switch"));
     await waitFor(() =>
       expect(
-        JSON.parse(localStorage.getItem("quotaloop.v1") ?? "{}").notifications
+        JSON.parse(localStorage.getItem("quotaloop.v2") ?? "{}").notifications
           .webEnabled,
       ).toBe(true),
     );
