@@ -697,6 +697,9 @@ function DashboardApp() {
       </main>
     );
   const policy = snapshot.persistent.automationPolicy;
+  const demoServicePreference = servicePreferences.find(
+    (preference) => preference.serviceId === "codex-demo",
+  );
   const history = snapshot.persistent.executionHistory;
   const detections = Object.fromEntries(
     snapshot.providerStates.map((item) => [
@@ -758,7 +761,14 @@ function DashboardApp() {
             {snapshot.modelLabRunState.progress}%
           </p>
           <button onClick={runModelLab}>Run synthetic benchmark</button>
-          <fieldset className="model-selection">
+          <fieldset
+            className="model-selection"
+            disabled={
+              demoServicePreference?.enabled !== true ||
+              demoServicePreference.visibleInModelLab !== true ||
+              demoServicePreference.allowBenchmarkRequests !== true
+            }
+          >
             <legend>Select synthetic models</legend>
             {syntheticCatalog.map((model) => (
               <label key={model.id}>
@@ -785,17 +795,38 @@ function DashboardApp() {
         </section>
         <section className="dashboard-card" data-section="providers">
           <h2>Providers</h2>
-          {providers.map((provider) => (
-            <ProviderStatus
-              key={provider.id}
-              name={provider.name}
-              state={detections[provider.id]?.state ?? "not checked"}
-              detail={
-                detections[provider.id]?.version ??
-                "Quota unavailable · detection only"
-              }
-            />
-          ))}
+          {[...providers]
+            .sort(
+              (left, right) =>
+                Number(
+                  servicePreferences.find((item) => item.serviceId === right.id)
+                    ?.favorite,
+                ) -
+                Number(
+                  servicePreferences.find((item) => item.serviceId === left.id)
+                    ?.favorite,
+                ),
+            )
+            .filter((provider) => {
+              const preference = servicePreferences.find(
+                (item) => item.serviceId === provider.id,
+              );
+              return (
+                preference?.enabled !== false &&
+                preference?.visibleInQuota !== false
+              );
+            })
+            .map((provider) => (
+              <ProviderStatus
+                key={provider.id}
+                name={provider.name}
+                state={detections[provider.id]?.state ?? "not checked"}
+                detail={
+                  detections[provider.id]?.version ??
+                  "Quota unavailable · detection only"
+                }
+              />
+            ))}
           <button onClick={() => void refresh()} disabled={refreshing}>
             {refreshing ? "Refreshing…" : "Refresh providers"}
           </button>
@@ -963,36 +994,55 @@ function DashboardApp() {
           <button onClick={() => request("clear_local_data_requested", {})}>
             Clear local data
           </button>
+          <label className="service-toggle">
+            <span>Action notifications</span>
+            <input
+              type="checkbox"
+              checked={snapshot.persistent.preferences.notifications.enabled}
+              onChange={(event) =>
+                request("notification_preference_requested", {
+                  enabled: event.target.checked,
+                  actionCompleted:
+                    snapshot.persistent.preferences.notifications
+                      .actionCompleted,
+                })
+              }
+            />
+          </label>
           <h3>AI Services</h3>
-          {servicePreferences.map((preference) => (
-            <fieldset key={preference.serviceId} className="service-toggle">
-              <legend>{preference.serviceId}</legend>
-              {(
-                [
-                  ["enabled", "Enabled"],
-                  ["visibleInQuota", "Quota"],
-                  ["visibleInModelLab", "Model Lab"],
-                  ["allowCatalogAccess", "Catalog"],
-                  ["allowBenchmarkRequests", "Benchmark"],
-                  ["favorite", "Favorite"],
-                ] as const
-              ).map(([key, label]) => (
-                <label key={key}>
-                  {label}
-                  <input
-                    type="checkbox"
-                    checked={preference[key]}
-                    onChange={(event) =>
-                      updateServicePreference({
-                        ...preference,
-                        [key]: event.target.checked,
-                      })
-                    }
-                  />
-                </label>
-              ))}
-            </fieldset>
-          ))}
+          {[...servicePreferences]
+            .sort(
+              (left, right) => Number(right.favorite) - Number(left.favorite),
+            )
+            .map((preference) => (
+              <fieldset key={preference.serviceId} className="service-toggle">
+                <legend>{preference.serviceId}</legend>
+                {(
+                  [
+                    ["enabled", "Enabled"],
+                    ["visibleInQuota", "Quota"],
+                    ["visibleInModelLab", "Model Lab"],
+                    ["allowCatalogAccess", "Catalog"],
+                    ["allowBenchmarkRequests", "Benchmark"],
+                    ["favorite", "Favorite"],
+                  ] as const
+                ).map(([key, label]) => (
+                  <label key={key}>
+                    {label}
+                    <input
+                      type="checkbox"
+                      checked={preference[key]}
+                      onChange={(event) =>
+                        updateServicePreference({
+                          ...preference,
+                          [key]: event.target.checked,
+                        })
+                      }
+                    />
+                  </label>
+                ))}
+              </fieldset>
+            ))}
           <p>
             Credential support unavailable. Secure storage is not connected in
             this build.
