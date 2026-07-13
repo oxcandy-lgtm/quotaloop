@@ -220,10 +220,34 @@ export interface DesktopRuntimeSnapshotV2 {
   modelLabRunState: ModelLabRunState;
   notificationPermission: NotificationPermissionState;
 }
+export type DesktopRequestType =
+  | "request_desktop_snapshot"
+  | "request_policy_update"
+  | "request_refresh_providers"
+  | "request_model_lab_run"
+  | "request_service_preference"
+  | "request_subscription_update"
+  | "request_clear_local_data";
+export const desktopRequestEnvelopeSchema = z
+  .object({
+    schemaVersion: z.literal(2),
+    requestId: z.string().uuid(),
+    type: z.enum([
+      "request_desktop_snapshot",
+      "request_policy_update",
+      "request_refresh_providers",
+      "request_model_lab_run",
+      "request_service_preference",
+      "request_subscription_update",
+      "request_clear_local_data",
+    ]),
+    payload: z.unknown(),
+  })
+  .strict();
 export interface DesktopRequestEnvelope<T = unknown> {
   schemaVersion: 2;
   requestId: string;
-  type: string;
+  type: DesktopRequestType;
   payload: T;
 }
 export interface DesktopRequestResult {

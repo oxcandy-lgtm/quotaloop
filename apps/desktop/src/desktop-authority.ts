@@ -130,17 +130,19 @@ export class DesktopAuthority {
   }
   async runModelLab(
     execute: () => Promise<void>,
+    requestId = crypto.randomUUID(),
   ): Promise<DesktopRequestResult> {
     if (!this.hydrated)
       return {
-        requestId: "",
+        requestId,
         accepted: false,
         revision: this.revision,
         reason: "authority_not_ready",
       };
-    if (this.modelLab.isRunning)
+    const started = this.modelLab.startRun();
+    if (!started.accepted)
       return {
-        requestId: "",
+        requestId,
         accepted: false,
         revision: this.revision,
         reason: "execution_in_progress",
@@ -148,7 +150,7 @@ export class DesktopAuthority {
     this.modelLabRunState = {
       status: "running",
       progress: 0,
-      runId: crypto.randomUUID(),
+      runId: started.runId,
     };
     this.revision += 1;
     for (const progress of [25, 50, 75]) {
@@ -156,7 +158,17 @@ export class DesktopAuthority {
       this.modelLabRunState = { ...this.modelLabRunState, progress };
       this.revision += 1;
     }
-    const result = await this.modelLab.run(execute);
+    let result: "completed" | "discarded" | "duplicate";
+    try {
+      await execute();
+      result = this.modelLab.isCurrentGeneration(started.generation)
+        ? "completed"
+        : "discarded";
+    } catch {
+      result = "duplicate";
+    } finally {
+      this.modelLab.finishRun();
+    }
     if (result === "completed") {
       const record: ModelLabHistory = {
         id: crypto.randomUUID(),
@@ -191,8 +203,8 @@ export class DesktopAuthority {
           ? "reset_generation"
           : undefined;
     return reason
-      ? { requestId: "", accepted: false, revision: this.revision, reason }
-      : { requestId: "", accepted: true, revision: this.revision };
+      ? { requestId, accepted: false, revision: this.revision, reason }
+      : { requestId, accepted: true, revision: this.revision };
   }
   start() {
     if (this.hydrated) this.scheduler.start();
@@ -211,6 +223,8 @@ export class DesktopAuthority {
   reset() {
     this.modelLab.reset();
     this.modelLabRunState = { status: "idle", progress: 0, runId: null };
+    this.notificationPermission = "unknown";
+    this.lastNotificationEventKey = null;
     this.revision += 1;
     const result = this.controller.resetToSafeDefaults();
     this.persistent = defaultDesktopState();

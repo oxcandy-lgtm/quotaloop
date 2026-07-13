@@ -357,14 +357,19 @@ function PopoverApp() {
       snapshot: authorityRef.current.getSnapshot(),
     });
   };
+  const tabRefs = useRef<Record<PopoverTab, HTMLButtonElement | null>>({
+    quota: null,
+    modelLab: null,
+  });
   const moveTab = (event: React.KeyboardEvent) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
     const next =
       event.key === "Home" || event.key === "ArrowLeft" ? "quota" : "modelLab";
-    setActiveTab(
-      event.key === "End" || event.key === "ArrowRight" ? "modelLab" : next,
-    );
+    const target =
+      event.key === "End" || event.key === "ArrowRight" ? "modelLab" : next;
+    setActiveTab(target);
+    requestAnimationFrame(() => tabRefs.current[target]?.focus());
   };
   return (
     <main className="popover">
@@ -377,6 +382,9 @@ function PopoverApp() {
             id="tab-quota"
             aria-controls="panel-quota"
             tabIndex={activeTab === "quota" ? 0 : -1}
+            ref={(node) => {
+              tabRefs.current.quota = node;
+            }}
             onKeyDown={moveTab}
             onClick={() => setActiveTab("quota")}
           >
@@ -389,6 +397,9 @@ function PopoverApp() {
             id="tab-model-lab"
             aria-controls="panel-model-lab"
             tabIndex={activeTab === "modelLab" ? 0 : -1}
+            ref={(node) => {
+              tabRefs.current.modelLab = node;
+            }}
             onKeyDown={moveTab}
             onClick={() => setActiveTab("modelLab")}
           >
@@ -600,7 +611,6 @@ function DashboardApp() {
   >(() => defaultServicePreferences());
   const [refreshing, setRefreshing] = useState(false);
   useEffect(() => {
-    void invoke("request_desktop_snapshot");
     const listeners = Promise.all([
       listen<string>("section-selected", (event) => setSection(event.payload)),
       listen<DesktopRuntimeSnapshotV2>("desktop-snapshot", (event) => {
@@ -608,6 +618,7 @@ function DashboardApp() {
         setServicePreferences(event.payload.persistent.preferences.aiServices);
       }),
     ]);
+    void listeners.then(() => invoke("request_desktop_snapshot"));
     return () => {
       void listeners.then((items) => items.forEach((item) => item()));
     };
@@ -649,7 +660,7 @@ function DashboardApp() {
           <Gauge />
         </div>
         <strong>QuotaLoop Dashboard</strong>
-        <span className="online">LOCAL AGENT</span>
+        <span className="online">LOCAL</span>
       </header>
       <p className="dashboard-section-label">{section.toUpperCase()}</p>
       <nav className="dashboard-nav" aria-label="Dashboard sections">
