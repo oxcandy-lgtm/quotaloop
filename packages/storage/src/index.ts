@@ -52,116 +52,32 @@ export function normalizeServicePreferences(
   }
   return [...seen.values()];
 }
+
+export const APP_DATA_V1_KEY = "quotaloop.v1";
+export const APP_DATA_V2_KEY = "quotaloop.v2";
+
 export class LocalStorageRepository {
-  constructor(private readonly key = "quotaloop.v1") {}
+  constructor(
+    private readonly legacyKey = APP_DATA_V1_KEY,
+    private readonly key = APP_DATA_V2_KEY,
+  ) {}
+
   load(fallback: AppData): AppData {
     try {
-      const raw = localStorage.getItem(this.key);
-      if (!raw) return fallback;
-      const parsed: unknown = JSON.parse(raw);
-      if (!parsed || typeof parsed !== "object") return fallback;
-      const value = parsed as Record<string, unknown>;
-      const policy = automationPolicySchema.safeParse(value.policy);
-      const history = Array.isArray(value.history)
-        ? value.history.filter(isExecutionRecord)
-        : fallback.history;
-      const subscriptions = Array.isArray(value.subscriptions)
-        ? value.subscriptions.flatMap((item) => {
-            const result = subscriptionSchema.safeParse(item);
-            return result.success &&
-              fallback.aiServices.some(
-                (service) => service.serviceId === result.data.providerId,
-              )
-              ? [result.data]
-              : [];
-          })
-        : fallback.subscriptions;
-      const preferences =
-        value.notifications && typeof value.notifications === "object"
-          ? (value.notifications as Record<string, unknown>)
-          : null;
-      const notifications =
-        preferences &&
-        typeof preferences.webEnabled === "boolean" &&
-        typeof preferences.desktopEnabled === "boolean" &&
-        typeof preferences.actionCompleted === "boolean" &&
-        typeof preferences.testNotification === "boolean"
-          ? {
-              webEnabled: preferences.webEnabled,
-              desktopEnabled: preferences.desktopEnabled,
-              actionCompleted: preferences.actionCompleted,
-              testNotification: preferences.testNotification,
-            }
-          : fallback.notifications;
-      const aiServices = Array.isArray(value.aiServices)
-        ? normalizeServicePreferences(
-            value.aiServices.flatMap((item) => {
-              const result = aiServicePreferenceSchema.safeParse(item);
-              return result.success &&
-                fallback.aiServices.some(
-                  (service) => service.serviceId === result.data.serviceId,
-                )
-                ? [result.data]
-                : [];
-            }),
-          )
-        : fallback.aiServices;
-      const credentials = Array.isArray(value.credentials)
-        ? value.credentials.flatMap((item) => {
-            const result = credentialMetadataSchema.safeParse(item);
-            if (!result.success) return [];
-            if (
-              !fallback.aiServices.some(
-                (service) => service.serviceId === result.data.providerId,
-              )
-            )
-              return [];
-            const { providerId, status, updatedAt } = result.data;
-            return updatedAt === undefined
-              ? [{ providerId, status }]
-              : [{ providerId, status, updatedAt }];
-          })
-        : fallback.credentials;
-      const modelLab = modelLabSelectionSchema.safeParse(value.modelLab);
-      if (modelLab.success) {
-        modelLab.data.selectedModelIds = modelLab.data.selectedModelIds.filter(
-          (id) => /^demo-model-\d{2}$/.test(id),
-        );
+      const currentRaw = localStorage.getItem(this.key);
+      if (currentRaw !== null) {
+        return normalizeAppData(parseJson(currentRaw), fallback);
       }
-      const modelLabHistory = Array.isArray(value.modelLabHistory)
-        ? value.modelLabHistory.flatMap((item) =>
-            isModelLabHistory(item) &&
-            item.modelIds.every((id) => /^demo-model-\d{2}$/.test(id))
-              ? [item]
-              : [],
-          )
-        : fallback.modelLabHistory;
-      return {
-        ...fallback,
-        schemaVersion: 2,
-        policy: policy.success ? policy.data : fallback.policy,
-        history,
-        subscriptions,
-        theme:
-          value.theme === "light" ||
-          value.theme === "dark" ||
-          value.theme === "system"
-            ? value.theme
-            : fallback.theme,
-        onboardingComplete:
-          typeof value.onboardingComplete === "boolean"
-            ? value.onboardingComplete
-            : fallback.onboardingComplete,
-        notifications,
-        aiServices,
-        credentials,
-        modelLab: modelLab.success ? modelLab.data : fallback.modelLab,
-        modelLabHistory,
-        lastNotificationEventKey:
-          typeof value.lastNotificationEventKey === "string"
-            ? value.lastNotificationEventKey
-            : null,
-      };
+      const legacyRaw = localStorage.getItem(this.legacyKey);
+      if (legacyRaw === null) return fallback;
+      const normalized = normalizeAppData(parseJson(legacyRaw), fallback);
+      try {
+        localStorage.setItem(this.key, JSON.stringify(normalized));
+        localStorage.removeItem(this.legacyKey);
+      } catch {
+        // Keep v1 available when the normalized v2 write fails.
+      }
+      return normalized;
     } catch {
       return fallback;
     }
@@ -171,10 +87,125 @@ export class LocalStorageRepository {
   }
   clear() {
     localStorage.removeItem(this.key);
+    localStorage.removeItem(this.legacyKey);
   }
   export(data: AppData) {
     return JSON.stringify(data, null, 2);
   }
+}
+
+function parseJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeAppData(parsed: unknown, fallback: AppData): AppData {
+  if (!parsed || typeof parsed !== "object") return fallback;
+  const value = parsed as Record<string, unknown>;
+  const policy = automationPolicySchema.safeParse(value.policy);
+  const history = Array.isArray(value.history)
+    ? value.history.filter(isExecutionRecord)
+    : fallback.history;
+  const subscriptions = Array.isArray(value.subscriptions)
+    ? value.subscriptions.flatMap((item) => {
+        const result = subscriptionSchema.safeParse(item);
+        return result.success &&
+          fallback.aiServices.some(
+            (service) => service.serviceId === result.data.providerId,
+          )
+          ? [result.data]
+          : [];
+      })
+    : fallback.subscriptions;
+  const preferences =
+    value.notifications && typeof value.notifications === "object"
+      ? (value.notifications as Record<string, unknown>)
+      : null;
+  const notifications =
+    preferences &&
+    typeof preferences.webEnabled === "boolean" &&
+    typeof preferences.desktopEnabled === "boolean" &&
+    typeof preferences.actionCompleted === "boolean" &&
+    typeof preferences.testNotification === "boolean"
+      ? {
+          webEnabled: preferences.webEnabled,
+          desktopEnabled: preferences.desktopEnabled,
+          actionCompleted: preferences.actionCompleted,
+          testNotification: preferences.testNotification,
+        }
+      : fallback.notifications;
+  const aiServices = Array.isArray(value.aiServices)
+    ? normalizeServicePreferences(
+        value.aiServices.flatMap((item) => {
+          const result = aiServicePreferenceSchema.safeParse(item);
+          return result.success &&
+            fallback.aiServices.some(
+              (service) => service.serviceId === result.data.serviceId,
+            )
+            ? [result.data]
+            : [];
+        }),
+      )
+    : fallback.aiServices;
+  const credentials = Array.isArray(value.credentials)
+    ? value.credentials.flatMap((item) => {
+        const result = credentialMetadataSchema.safeParse(item);
+        if (!result.success) return [];
+        if (
+          !fallback.aiServices.some(
+            (service) => service.serviceId === result.data.providerId,
+          )
+        )
+          return [];
+        const { providerId, status, updatedAt } = result.data;
+        return updatedAt === undefined
+          ? [{ providerId, status }]
+          : [{ providerId, status, updatedAt }];
+      })
+    : fallback.credentials;
+  const modelLab = modelLabSelectionSchema.safeParse(value.modelLab);
+  if (modelLab.success) {
+    modelLab.data.selectedModelIds = modelLab.data.selectedModelIds.filter(
+      (id) => /^demo-model-\d{2}$/.test(id),
+    );
+  }
+  const modelLabHistory = Array.isArray(value.modelLabHistory)
+    ? value.modelLabHistory.flatMap((item) =>
+        isModelLabHistory(item) &&
+        item.modelIds.every((id) => /^demo-model-\d{2}$/.test(id))
+          ? [item]
+          : [],
+      )
+    : fallback.modelLabHistory;
+  return {
+    ...fallback,
+    schemaVersion: 2,
+    policy: policy.success ? policy.data : fallback.policy,
+    history,
+    subscriptions,
+    theme:
+      value.theme === "light" ||
+      value.theme === "dark" ||
+      value.theme === "system"
+        ? value.theme
+        : fallback.theme,
+    onboardingComplete:
+      typeof value.onboardingComplete === "boolean"
+        ? value.onboardingComplete
+        : fallback.onboardingComplete,
+    notifications,
+    aiServices,
+    credentials,
+    modelLab: modelLab.success ? modelLab.data : fallback.modelLab,
+    modelLabHistory,
+    lastNotificationEventKey:
+      typeof value.lastNotificationEventKey === "string"
+        ? value.lastNotificationEventKey
+        : fallback.lastNotificationEventKey,
+  };
 }
 function isExecutionRecord(value: unknown): value is ExecutionRecord {
   if (!value || typeof value !== "object") return false;

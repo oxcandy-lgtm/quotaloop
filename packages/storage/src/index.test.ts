@@ -1,15 +1,24 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  APP_DATA_V2_KEY,
   LocalStorageRepository,
   normalizeServicePreferences,
   type AppData,
 } from "./index";
 
 const values = new Map<string, string>();
+let failV2Write = false;
+let v2Writes = 0;
 Object.defineProperty(globalThis, "localStorage", {
   value: {
     getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => values.set(key, value),
+    setItem: (key: string, value: string) => {
+      if (key === APP_DATA_V2_KEY) {
+        v2Writes += 1;
+        if (failV2Write) throw new Error("storage full");
+      }
+      values.set(key, value);
+    },
     removeItem: (key: string) => values.delete(key),
   },
 });
@@ -40,7 +49,11 @@ const fallback: AppData = {
   modelLabHistory: [],
   lastNotificationEventKey: null,
 };
-beforeEach(() => values.clear());
+beforeEach(() => {
+  values.clear();
+  failV2Write = false;
+  v2Writes = 0;
+});
 describe("AppData v2 migration", () => {
   it("fills v2 fields for v1 data", () => {
     values.set(
@@ -58,6 +71,28 @@ describe("AppData v2 migration", () => {
     const result = new LocalStorageRepository().load(fallback);
     expect(result.schemaVersion).toBe(2);
     expect(result.modelLab.selectedModelIds).toEqual([]);
+    expect(values.has("quotaloop.v2")).toBe(true);
+    expect(values.has("quotaloop.v1")).toBe(false);
+  });
+  it("migrates once and reads v2 on the next load", () => {
+    values.set(
+      "quotaloop.v1",
+      JSON.stringify({
+        schemaVersion: 1,
+        policy: fallback.policy,
+        history: [],
+        subscriptions: [],
+        theme: "dark",
+        onboardingComplete: true,
+        notifications: fallback.notifications,
+      }),
+    );
+    new LocalStorageRepository().load(fallback);
+    expect(v2Writes).toBe(1);
+    v2Writes = 0;
+    const result = new LocalStorageRepository().load(fallback);
+    expect(result.theme).toBe("dark");
+    expect(v2Writes).toBe(0);
   });
   it("disables duplicate service preferences conservatively", () => {
     const preference = {
@@ -109,5 +144,22 @@ describe("AppData v2 migration", () => {
     expect(result.theme).toBe("dark");
     expect(result.notifications).toEqual(fallback.notifications);
     expect(result.modelLab.selectedModelIds).toEqual([]);
+  });
+  it("keeps v1 when the normalized v2 save fails", () => {
+    values.set(
+      "quotaloop.v1",
+      JSON.stringify({
+        schemaVersion: 1,
+        policy: fallback.policy,
+        notifications: fallback.notifications,
+      }),
+    );
+    failV2Write = true;
+
+    const result = new LocalStorageRepository().load(fallback);
+
+    expect(result.schemaVersion).toBe(2);
+    expect(values.has("quotaloop.v1")).toBe(true);
+    expect(values.has("quotaloop.v2")).toBe(false);
   });
 });

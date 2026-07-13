@@ -21,7 +21,7 @@ export class MockCodexProvider implements QuotaProvider {
   readonly displayName = "Codex Demo";
   readonly integrationLevel = "mock" as const;
   readonly capabilities: ProviderCapabilities = {
-    installationDetection: true,
+    installationDetection: false,
     authenticationDetection: true,
     quotaRead: true,
     resetTimeRead: true,
@@ -61,18 +61,21 @@ export class MockCodexProvider implements QuotaProvider {
 
 export class LocalCliProvider implements QuotaProvider {
   readonly integrationLevel = "detect_only" as const;
-  readonly capabilities: ProviderCapabilities = {
-    installationDetection: true,
-    authenticationDetection: false,
-    quotaRead: false,
-    resetTimeRead: false,
-    localTaskExecution: false,
-    nativeNotificationMetadata: true,
-  };
+  readonly capabilities: ProviderCapabilities;
   constructor(
     readonly id: string,
     readonly displayName: string,
-  ) {}
+    detectable = false,
+  ) {
+    this.capabilities = {
+      installationDetection: detectable,
+      authenticationDetection: false,
+      quotaRead: false,
+      resetTimeRead: false,
+      localTaskExecution: false,
+      nativeNotificationMetadata: true,
+    };
+  }
   async detectInstallation() {
     return { installed: false, version: null };
   }
@@ -86,12 +89,12 @@ export class LocalCliProvider implements QuotaProvider {
 
 export const providerCatalog: QuotaProvider[] = [
   new MockCodexProvider(),
-  new LocalCliProvider("codex", "Codex"),
-  new LocalCliProvider("claude-code", "Claude Code"),
-  new LocalCliProvider("gemini-cli", "Gemini CLI"),
+  new LocalCliProvider("codex", "Codex", true),
+  new LocalCliProvider("claude-code", "Claude Code", true),
+  new LocalCliProvider("gemini-cli", "Gemini CLI", true),
   new LocalCliProvider("cursor", "Cursor"),
   new LocalCliProvider("github-copilot", "GitHub Copilot"),
-  new LocalCliProvider("opencode", "OpenCode"),
+  new LocalCliProvider("opencode", "OpenCode", true),
   new LocalCliProvider("openrouter", "OpenRouter"),
 ];
 
@@ -99,7 +102,10 @@ export const serviceDefinitions = providerCatalog.map((provider) => ({
   serviceId: provider.id,
   displayName: provider.displayName,
   integrationLevel: provider.integrationLevel,
-  supportsQuotaSurface: provider.capabilities.quotaRead,
+  supportsQuotaSurface:
+    provider.capabilities.installationDetection ||
+    provider.capabilities.quotaRead,
+  supportsQuotaRead: provider.capabilities.quotaRead,
   supportsModelLab: true,
   supportsCatalog: true,
   supportsBenchmark: provider.integrationLevel === "mock",
@@ -109,3 +115,22 @@ export const serviceDefinitions = providerCatalog.map((provider) => ({
       : ("unavailable" as const),
   capabilities: provider.capabilities,
 }));
+
+/**
+ * The Rust detector supports this exact set of executable-backed providers.
+ * Keeping the list derived from provider capabilities prevents the Popover
+ * from maintaining a second hand-written detection registry.
+ */
+export const detectableServiceIds = serviceDefinitions
+  .filter(
+    (service) =>
+      service.integrationLevel === "detect_only" &&
+      service.capabilities?.installationDetection === true,
+  )
+  .map((service) => service.serviceId);
+
+export const detectableServiceDefinitions = serviceDefinitions.filter(
+  (service) =>
+    service.integrationLevel === "detect_only" &&
+    service.capabilities?.installationDetection === true,
+);

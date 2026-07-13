@@ -8,6 +8,7 @@ use tauri::{Emitter, Manager, PhysicalPosition, Position, WindowEvent};
 
 const DETECTION_TIMEOUT: Duration = Duration::from_secs(2);
 const OUTPUT_LIMIT: usize = 16 * 1024;
+pub const DETECTABLE_PROVIDER_IDS: &[&str] = &["codex", "claude-code", "gemini-cli", "opencode"];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -27,6 +28,9 @@ pub struct CliDetection {
 }
 
 fn provider_executable(provider_id: &str) -> Option<&'static str> {
+    if !DETECTABLE_PROVIDER_IDS.contains(&provider_id) {
+        return None;
+    }
     match provider_id {
         "codex" => Some("codex"),
         "claude-code" => Some("claude"),
@@ -279,6 +283,10 @@ mod tests {
     use super::*;
     #[test]
     fn allowlist_is_fixed() {
+        assert_eq!(
+            DETECTABLE_PROVIDER_IDS,
+            &["codex", "claude-code", "gemini-cli", "opencode"]
+        );
         assert_eq!(provider_executable("codex"), Some("codex"));
         assert_eq!(provider_executable("claude-code"), Some("claude"));
     }

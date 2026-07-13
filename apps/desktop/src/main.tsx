@@ -16,7 +16,11 @@ import {
   Settings,
   ShieldCheck,
 } from "lucide-react";
-import { MockCodexProvider, serviceDefinitions } from "@quotaloop/providers";
+import {
+  MockCodexProvider,
+  detectableServiceDefinitions,
+  serviceDefinitions,
+} from "@quotaloop/providers";
 import type {
   AIServicePreference,
   DesktopRequestEnvelope,
@@ -49,15 +53,13 @@ type DetectionState =
 type Detection = {
   provider_id: string;
   state: DetectionState;
-  version?: string | null;
+  version?: string | null | undefined;
 };
 type History = ExecutionRecord;
-const providers = [
-  { id: "codex", name: "Codex" },
-  { id: "claude-code", name: "Claude Code" },
-  { id: "gemini-cli", name: "Gemini CLI" },
-  { id: "opencode", name: "OpenCode" },
-];
+const providers = detectableServiceDefinitions.map((service) => ({
+  id: service.serviceId,
+  name: service.displayName,
+}));
 const demo = new MockCodexProvider();
 const defaultServicePreferences = (): AIServicePreference[] =>
   serviceDefinitions.map((service) => ({
@@ -820,11 +822,8 @@ function DashboardApp() {
               <ProviderStatus
                 key={provider.id}
                 name={provider.name}
-                state={detections[provider.id]?.state ?? "not checked"}
-                detail={
-                  detections[provider.id]?.version ??
-                  "Quota unavailable · detection only"
-                }
+                state={providerDetectionState(detections[provider.id])}
+                detail={providerDetectionDetail(detections[provider.id])}
               />
             ))}
           <button onClick={() => void refresh()} disabled={refreshing}>
@@ -1075,33 +1074,40 @@ function ProviderRow({
   provider: { id: string; name: string };
   detection: Detection;
 }) {
-  const label =
-    detection.state === "installed"
-      ? "Installed"
-      : detection.state === "not_installed"
-        ? "Not installed"
-        : detection.state === "not_checked"
-          ? "Not checked"
-          : detection.state === "unsupported"
-            ? "Unsupported"
-            : detection.state === "timeout"
-              ? "Timed out"
-              : "Detection failed";
   return (
     <section className="provider compact">
       <div>
         <b>{provider.name}</b>
         <span className={detection.state === "installed" ? "detect" : "muted"}>
-          {label}
+          {providerDetectionState(detection)}
         </span>
       </div>
-      <small>
-        {detection.version
-          ? `Version ${detection.version}`
-          : "Quota unavailable · detection only"}
-      </small>
+      <small>{providerDetectionDetail(detection)}</small>
     </section>
   );
+}
+
+function providerDetectionState(detection: Detection | undefined) {
+  const state = detection?.state ?? "not_checked";
+  const label =
+    state === "installed"
+      ? "Installed"
+      : state === "not_installed"
+        ? "Not installed"
+        : state === "not_checked"
+          ? "Not checked"
+          : state === "unsupported"
+            ? "Unsupported"
+            : state === "timeout"
+              ? "Timed out"
+              : "Detection failed";
+  return `${label} · Quota unavailable`;
+}
+
+function providerDetectionDetail(detection: Detection | undefined) {
+  return detection?.version
+    ? `Version ${detection.version} · detection only`
+    : "Detection only; quota unavailable";
 }
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

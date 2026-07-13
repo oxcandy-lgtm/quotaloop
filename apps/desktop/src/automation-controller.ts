@@ -79,6 +79,7 @@ export function loadHistory(): DesktopHistory[] {
 
 export class DesktopAutomationController {
   private running = false;
+  private resetGeneration = 0;
   private readonly inFlightKeys = new Set<string>();
   constructor(
     private readonly provider: QuotaProvider = new MockCodexProvider(),
@@ -103,6 +104,7 @@ export class DesktopAutomationController {
     policy: QuotaAutomationPolicy;
     history: DesktopHistory[];
   } {
+    this.resetGeneration += 1;
     const policy = safeDefaultPolicy();
     this.policy = policy;
     this.history = [];
@@ -132,6 +134,7 @@ export class DesktopAutomationController {
         eventKey: key,
       };
     this.inFlightKeys.add(key);
+    const generation = this.resetGeneration;
     try {
       const quota = await this.provider.getQuotaStatus();
       const auth = await this.provider.getAuthStatus();
@@ -166,6 +169,8 @@ export class DesktopAutomationController {
           idempotencyKey: key,
           timeoutMs: 30_000,
         });
+        if (generation !== this.resetGeneration)
+          return { decision, eventKey: key };
         const record: DesktopHistory = {
           id: crypto.randomUUID(),
           providerId: result.providerId,

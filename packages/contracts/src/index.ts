@@ -162,6 +162,7 @@ export interface AIServiceDefinition {
   displayName: string;
   integrationLevel: IntegrationLevel;
   supportsQuotaSurface: boolean;
+  supportsQuotaRead: boolean;
   supportsModelLab: boolean;
   supportsCatalog: boolean;
   supportsBenchmark: boolean;

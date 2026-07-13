@@ -4,6 +4,10 @@ import type {
   DesktopRequestType,
 } from "@quotaloop/contracts";
 import { DesktopAuthority } from "./desktop-authority";
+import {
+  DESKTOP_STATE_KEY,
+  LEGACY_DESKTOP_KEYS,
+} from "./desktop-state-repository";
 
 const values = new Map<string, string>();
 Object.defineProperty(globalThis, "localStorage", {
@@ -28,6 +32,58 @@ const request = <T>(
 beforeEach(() => values.clear());
 
 describe("DesktopAuthority transport and lifecycle", () => {
+  it("hydrates valid legacy controller slices before applying authority state", async () => {
+    values.set(
+      LEGACY_DESKTOP_KEYS.policy,
+      JSON.stringify({
+        enabled: true,
+        paused: false,
+        actionMode: "minimal",
+        maximumRunsPerDay: 2,
+        minimumRemainingPercent: 40,
+        activeHours: { start: "00:00", end: "24:00", timeZone: "UTC" },
+        targetProviders: ["codex-demo"],
+      }),
+    );
+    values.set(
+      LEGACY_DESKTOP_KEYS.history,
+      JSON.stringify([
+        {
+          id: "legacy-record",
+          providerId: "codex-demo",
+          startedAt: "2030-01-01T00:00:00.000Z",
+          completedAt: "2030-01-01T00:01:00.000Z",
+          outcome: "success",
+          reason: "legacy",
+          idempotencyKey: "legacy-key",
+        },
+      ]),
+    );
+
+    const authority = new DesktopAuthority();
+    await authority.hydrate();
+    expect(authority.getSnapshot().persistent.automationPolicy.enabled).toBe(
+      true,
+    );
+    expect(authority.getSnapshot().persistent.executionHistory).toHaveLength(1);
+    expect(values.has(DESKTOP_STATE_KEY)).toBe(true);
+
+    authority.reset();
+    const resetSnapshot = authority.getSnapshot();
+    expect(resetSnapshot.persistent.automationPolicy.enabled).toBe(false);
+    expect(resetSnapshot.persistent.automationPolicy.paused).toBe(false);
+    expect(resetSnapshot.persistent.executionHistory).toEqual([]);
+    expect(
+      Object.values(LEGACY_DESKTOP_KEYS).every((key) => !values.has(key)),
+    ).toBe(true);
+    const restarted = new DesktopAuthority();
+    await restarted.hydrate();
+    expect(restarted.getSnapshot().persistent.executionHistory).toEqual([]);
+    expect(restarted.getSnapshot().persistent.automationPolicy.enabled).toBe(
+      false,
+    );
+  });
+
   it("validates requests, correlates acknowledgements, and persists canonical slices", async () => {
     const authority = new DesktopAuthority();
     await authority.hydrate();

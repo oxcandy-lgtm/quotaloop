@@ -1,10 +1,24 @@
 import type { DesktopPersistentStateV2 } from "@quotaloop/contracts";
-import { automationPolicySchema } from "@quotaloop/contracts";
+import {
+  automationPolicySchema,
+  modelLabSelectionSchema,
+} from "@quotaloop/contracts";
 import { safeDefaultPolicy } from "./automation-controller";
 
-const KEY = "quotaloop.desktop.v2";
+export const DESKTOP_STATE_KEY = "quotaloop.desktop.v2";
+export const LEGACY_DESKTOP_KEYS = {
+  policy: "quotaloop.desktop.policy",
+  history: "quotaloop.desktop.history",
+  notifications: "quotaloop.desktop.notifications",
+  aiServices: "quotaloop.desktop.ai-services",
+  modelLab: "quotaloop.desktop.model-lab",
+  lastNotificationEvent: "quotaloop.desktop.last-notification-event",
+} as const;
+const legacyKeys = Object.values(LEGACY_DESKTOP_KEYS);
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value && typeof value === "object" && !Array.isArray(value));
+
 const isExecutionRecord = (value: unknown) => {
   if (!isRecord(value)) return false;
   return (
@@ -19,6 +33,7 @@ const isExecutionRecord = (value: unknown) => {
     ["success", "blocked", "failed"].includes(String(value.outcome))
   );
 };
+
 const isSubscription = (value: unknown) => {
   if (!isRecord(value)) return false;
   return (
@@ -32,6 +47,7 @@ const isSubscription = (value: unknown) => {
     typeof value.notes === "string"
   );
 };
+
 const isServicePreference = (value: unknown) =>
   isRecord(value) &&
   Object.keys(value).every((key) =>
@@ -56,6 +72,7 @@ const isServicePreference = (value: unknown) =>
   ].every(
     (key) => typeof value[key] === (key === "serviceId" ? "string" : "boolean"),
   );
+
 const isCredentialMetadata = (value: unknown) => {
   if (!isRecord(value)) return false;
   if (
@@ -72,6 +89,7 @@ const isCredentialMetadata = (value: unknown) => {
     (value.updatedAt === undefined || typeof value.updatedAt === "string")
   );
 };
+
 const parsePreferences = (
   value: unknown,
   fallback: DesktopPersistentStateV2["preferences"],
@@ -109,6 +127,92 @@ const parsePreferences = (
     notifications,
   };
 };
+
+function parseJson(raw: string | null): unknown {
+  if (raw === null) return undefined;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+function parseLegacyNotificationPreferences(
+  value: unknown,
+  fallback: DesktopPersistentStateV2["preferences"]["notifications"],
+) {
+  return parsePreferences(
+    { notifications: value },
+    {
+      theme: "system",
+      aiServices: [],
+      credentials: [],
+      notifications: fallback,
+    },
+  ).notifications;
+}
+
+function parseLegacyEventKey(raw: string | null): string | null {
+  if (raw === null) return null;
+  const parsed = parseJson(raw);
+  if (typeof parsed === "string") return parsed || null;
+  if (parsed === undefined) return raw || null;
+  return null;
+}
+
+function parseModelLabSelection(value: unknown) {
+  const direct = modelLabSelectionSchema.safeParse(value);
+  if (direct.success) return direct.data;
+  if (Array.isArray(value)) {
+    const legacyArray = modelLabSelectionSchema.safeParse({
+      selectedModelIds: value,
+    });
+    if (legacyArray.success) return legacyArray.data;
+  }
+  return null;
+}
+
+function parseDesktopState(
+  value: unknown,
+  fallback: DesktopPersistentStateV2,
+): DesktopPersistentStateV2 {
+  if (!isRecord(value)) return fallback;
+  return {
+    ...fallback,
+    schemaVersion: 2,
+    automationPolicy: automationPolicySchema.safeParse(value.automationPolicy)
+      .success
+      ? automationPolicySchema.parse(value.automationPolicy)
+      : fallback.automationPolicy,
+    executionHistory: Array.isArray(value.executionHistory)
+      ? (value.executionHistory.filter(
+          isExecutionRecord,
+        ) as DesktopPersistentStateV2["executionHistory"])
+      : fallback.executionHistory,
+    modelLabPreferences: (() => {
+      return (
+        parseModelLabSelection(value.modelLabPreferences) ??
+        fallback.modelLabPreferences
+      );
+    })(),
+    modelLabHistory: Array.isArray(value.modelLabHistory)
+      ? (value.modelLabHistory.filter(
+          isModelLabHistory,
+        ) as DesktopPersistentStateV2["modelLabHistory"])
+      : fallback.modelLabHistory,
+    subscriptions: Array.isArray(value.subscriptions)
+      ? (value.subscriptions.filter(
+          isSubscription,
+        ) as DesktopPersistentStateV2["subscriptions"])
+      : fallback.subscriptions,
+    lastNotificationEventKey:
+      typeof value.lastNotificationEventKey === "string"
+        ? value.lastNotificationEventKey
+        : null,
+    preferences: parsePreferences(value.preferences, fallback.preferences),
+  };
+}
+
 export function defaultDesktopState(): DesktopPersistentStateV2 {
   return {
     schemaVersion: 2,
@@ -126,63 +230,88 @@ export function defaultDesktopState(): DesktopPersistentStateV2 {
     lastNotificationEventKey: null,
   };
 }
+
 export class DesktopStateRepository {
   load(): DesktopPersistentStateV2 {
     const fallback = defaultDesktopState();
     try {
-      const raw = localStorage.getItem(KEY);
-      if (!raw) return fallback;
-      const value: unknown = JSON.parse(raw);
-      if (!value || typeof value !== "object") return fallback;
-      const source = value as Record<string, unknown>;
-      return {
-        ...fallback,
-        schemaVersion: 2,
-        automationPolicy: automationPolicySchema.safeParse(
-          source.automationPolicy,
-        ).success
-          ? automationPolicySchema.parse(source.automationPolicy)
-          : fallback.automationPolicy,
-        executionHistory: Array.isArray(source.executionHistory)
-          ? (source.executionHistory.filter(
-              isExecutionRecord,
-            ) as DesktopPersistentStateV2["executionHistory"])
-          : fallback.executionHistory,
-        modelLabPreferences:
-          isRecord(source.modelLabPreferences) &&
-          Array.isArray(source.modelLabPreferences.selectedModelIds) &&
-          source.modelLabPreferences.selectedModelIds.every(
-            (id) => typeof id === "string",
-          )
-            ? (source.modelLabPreferences as unknown as DesktopPersistentStateV2["modelLabPreferences"])
-            : fallback.modelLabPreferences,
-        modelLabHistory: Array.isArray(source.modelLabHistory)
-          ? (source.modelLabHistory.filter(
-              isModelLabHistory,
-            ) as DesktopPersistentStateV2["modelLabHistory"])
-          : fallback.modelLabHistory,
-        subscriptions: Array.isArray(source.subscriptions)
-          ? (source.subscriptions.filter(
-              isSubscription,
-            ) as DesktopPersistentStateV2["subscriptions"])
-          : fallback.subscriptions,
-        lastNotificationEventKey:
-          typeof source.lastNotificationEventKey === "string"
-            ? source.lastNotificationEventKey
-            : null,
-        preferences: parsePreferences(source.preferences, fallback.preferences),
-      };
+      const raw = localStorage.getItem(DESKTOP_STATE_KEY);
+      if (raw !== null) return parseDesktopState(parseJson(raw), fallback);
+      return this.migrateLegacy(fallback);
     } catch {
       return fallback;
     }
   }
+
   save(state: DesktopPersistentStateV2) {
-    localStorage.setItem(KEY, JSON.stringify(state));
+    localStorage.setItem(DESKTOP_STATE_KEY, JSON.stringify(state));
   }
+
   clear() {
-    localStorage.removeItem(KEY);
+    localStorage.removeItem(DESKTOP_STATE_KEY);
+    for (const key of legacyKeys) localStorage.removeItem(key);
+  }
+
+  private migrateLegacy(
+    fallback: DesktopPersistentStateV2,
+  ): DesktopPersistentStateV2 {
+    const rawValues = Object.fromEntries(
+      legacyKeys.map((key) => [key, localStorage.getItem(key)]),
+    ) as Record<string, string | null>;
+    if (legacyKeys.every((key) => rawValues[key] === null)) return fallback;
+
+    const legacyPolicy = parseJson(rawValues[LEGACY_DESKTOP_KEYS.policy]!);
+    const legacyHistory = parseJson(rawValues[LEGACY_DESKTOP_KEYS.history]!);
+    const legacyNotifications = parseJson(
+      rawValues[LEGACY_DESKTOP_KEYS.notifications]!,
+    );
+    const legacyServices = parseJson(
+      rawValues[LEGACY_DESKTOP_KEYS.aiServices]!,
+    );
+    const legacyModelLab = parseJson(rawValues[LEGACY_DESKTOP_KEYS.modelLab]!);
+    const migrated: DesktopPersistentStateV2 = {
+      ...fallback,
+      schemaVersion: 2,
+      automationPolicy: automationPolicySchema.safeParse(legacyPolicy).success
+        ? automationPolicySchema.parse(legacyPolicy)
+        : fallback.automationPolicy,
+      executionHistory: Array.isArray(legacyHistory)
+        ? (legacyHistory.filter(
+            isExecutionRecord,
+          ) as DesktopPersistentStateV2["executionHistory"])
+        : fallback.executionHistory,
+      modelLabPreferences: (() => {
+        return (
+          parseModelLabSelection(legacyModelLab) ?? fallback.modelLabPreferences
+        );
+      })(),
+      preferences: {
+        ...fallback.preferences,
+        aiServices: Array.isArray(legacyServices)
+          ? (legacyServices.filter(
+              isServicePreference,
+            ) as DesktopPersistentStateV2["preferences"]["aiServices"])
+          : fallback.preferences.aiServices,
+        notifications: parseLegacyNotificationPreferences(
+          legacyNotifications,
+          fallback.preferences.notifications,
+        ),
+      },
+      lastNotificationEventKey: parseLegacyEventKey(
+        rawValues[LEGACY_DESKTOP_KEYS.lastNotificationEvent]!,
+      ),
+    };
+
+    try {
+      this.save(migrated);
+      for (const key of legacyKeys) localStorage.removeItem(key);
+    } catch {
+      // Preserve legacy keys if the normalized v2 write failed.
+    }
+    return migrated;
   }
 }
+
 const isModelLabHistory = (item: unknown) =>
   isRecord(item) &&
   typeof item.id === "string" &&
