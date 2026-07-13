@@ -126,7 +126,12 @@ export interface AIServiceDefinition {
   serviceId: string;
   displayName: string;
   integrationLevel: IntegrationLevel;
-  capabilities: ProviderCapabilities;
+  supportsQuotaSurface: boolean;
+  supportsModelLab: boolean;
+  supportsCatalog: boolean;
+  supportsBenchmark: boolean;
+  credentialMode: "none" | "local_session" | "api_key" | "unavailable";
+  capabilities?: ProviderCapabilities;
 }
 
 export interface AIServicePreference {

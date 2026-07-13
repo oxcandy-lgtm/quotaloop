@@ -36,6 +36,13 @@ import {
 } from "@quotaloop/core";
 import { providerCatalog } from "@quotaloop/providers";
 import { LocalStorageRepository, type AppData } from "@quotaloop/storage";
+import {
+  PageTitle as SharedPageTitle,
+  SettingRow as SharedSettingRow,
+  Toggle as SharedToggle,
+  NotificationPreferencePanel,
+  AIServicePreferenceList,
+} from "@quotaloop/ui";
 
 export type RuntimeMode = "demo" | "standalone_web" | "desktop_connected";
 export const runtimeMode: RuntimeMode = "standalone_web";
@@ -537,31 +544,35 @@ function Providers() {
         title="Provider catalog"
         detail="Integration levels reflect only verified local capabilities."
       />
-      <div className="catalog">
-        {providerCatalog.map((p) => (
-          <div className="catalog-row" key={p.id}>
-            <div className="provider-icon">{p.displayName[0]}</div>
-            <div>
-              <strong>{p.displayName}</strong>
-              <small>{p.integrationLevel.replace("_", " ")} integration</small>
+      <AIServicePreferenceList>
+        <div className="catalog">
+          {providerCatalog.map((p) => (
+            <div className="catalog-row" key={p.id}>
+              <div className="provider-icon">{p.displayName[0]}</div>
+              <div>
+                <strong>{p.displayName}</strong>
+                <small>
+                  {p.integrationLevel.replace("_", " ")} integration
+                </small>
+              </div>
+              <div className="capabilities">
+                {Object.entries(p.capabilities)
+                  .filter(([, v]) => v)
+                  .map(([k]) => (
+                    <span key={k}>
+                      {k.replace(/[A-Z]/g, (m) => ` ${m.toLowerCase()}`)}
+                    </span>
+                  ))}
+              </div>
+              <span
+                className={`state ${p.integrationLevel === "mock" ? "mock" : "unavailable"}`}
+              >
+                {p.integrationLevel}
+              </span>
             </div>
-            <div className="capabilities">
-              {Object.entries(p.capabilities)
-                .filter(([, v]) => v)
-                .map(([k]) => (
-                  <span key={k}>
-                    {k.replace(/[A-Z]/g, (m) => ` ${m.toLowerCase()}`)}
-                  </span>
-                ))}
-            </div>
-            <span
-              className={`state ${p.integrationLevel === "mock" ? "mock" : "unavailable"}`}
-            >
-              {p.integrationLevel}
-            </span>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      </AIServicePreferenceList>
     </section>
   );
 }
@@ -934,7 +945,7 @@ function SettingsPage({
   };
   return (
     <section>
-      <PageTitle
+      <SharedPageTitle
         eyebrow="SETTINGS"
         title="Preferences"
         detail="Appearance, notifications, privacy, and local data."
@@ -954,26 +965,31 @@ function SettingsPage({
               </button>
             ))}
           </div>
-          <SettingRow
-            title="Web notifications"
-            detail={
-              data.notifications.webEnabled
-                ? "Enabled for this browser"
-                : "Not enabled"
-            }
-          >
-            <Toggle
-              value={data.notifications.webEnabled}
-              set={(v) => {
-                if (v) void enableWebNotifications();
-                else
-                  save({
-                    ...data,
-                    notifications: { ...data.notifications, webEnabled: false },
-                  });
-              }}
-            />
-          </SettingRow>
+          <NotificationPreferencePanel>
+            <SharedSettingRow
+              title="Web notifications"
+              detail={
+                data.notifications.webEnabled
+                  ? "Enabled for this browser"
+                  : "Not enabled"
+              }
+            >
+              <SharedToggle
+                value={data.notifications.webEnabled}
+                set={(v) => {
+                  if (v) void enableWebNotifications();
+                  else
+                    save({
+                      ...data,
+                      notifications: {
+                        ...data.notifications,
+                        webEnabled: false,
+                      },
+                    });
+                }}
+              />
+            </SharedSettingRow>
+          </NotificationPreferencePanel>
           <button className="button secondary" onClick={testNotification}>
             Test browser notification
           </button>

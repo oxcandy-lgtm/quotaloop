@@ -94,3 +94,18 @@ export const providerCatalog: QuotaProvider[] = [
   new LocalCliProvider("opencode", "OpenCode"),
   new LocalCliProvider("openrouter", "OpenRouter"),
 ];
+
+export const serviceDefinitions = providerCatalog.map((provider) => ({
+  serviceId: provider.id,
+  displayName: provider.displayName,
+  integrationLevel: provider.integrationLevel,
+  supportsQuotaSurface: provider.capabilities.quotaRead,
+  supportsModelLab: true,
+  supportsCatalog: true,
+  supportsBenchmark: provider.integrationLevel === "mock",
+  credentialMode:
+    provider.integrationLevel === "mock"
+      ? ("none" as const)
+      : ("unavailable" as const),
+  capabilities: provider.capabilities,
+}));

@@ -24,11 +24,11 @@ import type {
   QuotaAutomationPolicy,
 } from "@quotaloop/contracts";
 import { automationPolicySchema } from "@quotaloop/contracts";
-import { loadHistory, loadPolicy } from "./automation-controller";
 import { resolveDesktopSurface } from "./surface";
 import { shouldDeliverNotification } from "./notification-controller";
-import { ProviderStatus } from "@quotaloop/ui";
+import { ProviderStatus, HistoryList, SubscriptionList } from "@quotaloop/ui";
 import { DesktopAuthority } from "./desktop-authority";
+import { modelLabViewModel } from "./model-lab/synthetic-catalog";
 import "./styles.css";
 
 type PopoverTab = "quota" | "modelLab";
@@ -76,34 +76,20 @@ function PopoverApp() {
   >("idle");
   const [servicePreferences, setServicePreferences] = useState<
     AIServicePreference[]
-  >(() => {
-    try {
-      return (
-        JSON.parse(
-          localStorage.getItem("quotaloop.desktop.ai-services") ?? "null",
-        ) ?? defaultServicePreferences()
-      );
-    } catch {
-      return defaultServicePreferences();
-    }
-  });
-  const [history, setHistory] = useState<History[]>(
-    () => loadHistory() as History[],
-  );
+  >(() => defaultServicePreferences());
+  const [history, setHistory] = useState<History[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
-  const [policy, setPolicyState] = useState<QuotaAutomationPolicy>(() =>
-    loadPolicy(),
-  );
+  const [policy, setPolicyState] = useState<QuotaAutomationPolicy>(() => ({
+    enabled: false,
+    paused: false,
+    actionMode: "minimal",
+    maximumRunsPerDay: 2,
+    minimumRemainingPercent: 40,
+    activeHours: { start: "00:00", end: "24:00", timeZone: "UTC" },
+    targetProviders: ["codex-demo"],
+  }));
   const policyRef = useRef(policy);
-  const [notificationsEnabled, setNotificationsEnabled] = useState(
-    () =>
-      (
-        JSON.parse(
-          localStorage.getItem("quotaloop.desktop.notifications") ??
-            '{"enabled":false,"actionCompleted":true}',
-        ) as { enabled: boolean }
-      ).enabled,
-  );
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const [notificationPermission, setNotificationPermission] = useState<
     "unknown" | "granted" | "denied" | "unavailable"
   >("unknown");
@@ -144,7 +130,7 @@ function PopoverApp() {
   }, []);
   const updatePolicy = (next: QuotaAutomationPolicy) => {
     policyRef.current = next;
-    controllerRef.current.setPolicy(next);
+    authorityRef.current.setPolicy(next);
     setPolicyState(next);
     void invoke("broadcast_policy_state", { policy: next });
   };
@@ -194,15 +180,22 @@ function PopoverApp() {
     );
     setServicePreferences(next);
     authorityRef.current.setServicePreferences(next);
-    localStorage.setItem("quotaloop.desktop.ai-services", JSON.stringify(next));
     void invoke("broadcast_service_preferences", { preferences: next });
   };
   useEffect(() => {
     void isPermissionGranted()
-      .then((granted) =>
-        setNotificationPermission(granted ? "granted" : "denied"),
+      .then(
+        (granted) => (
+          setNotificationPermission(granted ? "granted" : "denied"),
+          authorityRef.current.setNotificationPermission(
+            granted ? "granted" : "denied",
+          )
+        ),
       )
-      .catch(() => setNotificationPermission("unavailable"));
+      .catch(() => {
+        setNotificationPermission("unavailable");
+        authorityRef.current.setNotificationPermission("unavailable");
+      });
   }, []);
   useEffect(() => {
     void refresh();
@@ -213,7 +206,7 @@ function PopoverApp() {
         setPolicyState((current) => {
           const next = { ...current, paused: event.payload };
           policyRef.current = next;
-          controllerRef.current.setPolicy(next);
+          authorityRef.current.setPolicy(next);
           return next;
         });
       },
@@ -258,7 +251,18 @@ function PopoverApp() {
   }, [refresh]);
   useEffect(() => {
     void authorityRef.current.hydrate().then(() => {
-      authorityRef.current.setServicePreferences(servicePreferences);
+      const hydrated = authorityRef.current.getSnapshot();
+      setPolicyState(hydrated.persistent.automationPolicy);
+      policyRef.current = hydrated.persistent.automationPolicy;
+      setHistory(hydrated.persistent.executionHistory);
+      setServicePreferences(
+        hydrated.persistent.preferences.aiServices.length
+          ? hydrated.persistent.preferences.aiServices
+          : defaultServicePreferences(),
+      );
+      authorityRef.current.setServicePreferences(
+        hydrated.persistent.preferences.aiServices,
+      );
       authorityRef.current.setOnRecord(async (eventKey) => {
         setHistory(controllerRef.current.records as History[]);
         void invoke("broadcast_history_state", {
@@ -301,19 +305,15 @@ function PopoverApp() {
     } else setNotice(`Demo blocked: ${result.decision.reason}`);
   };
   const notifyCompletion = async (eventKey: string) => {
-    const prefs = JSON.parse(
-      localStorage.getItem("quotaloop.desktop.notifications") ??
-        '{"enabled":false,"actionCompleted":true}',
-    ) as { enabled: boolean; actionCompleted: boolean };
+    const prefs =
+      authorityRef.current.getSnapshot().persistent.preferences.notifications;
     try {
       if (
         !shouldDeliverNotification({
           preferences: prefs,
           permission: await isPermissionGranted(),
           eventKey,
-          lastEventKey: localStorage.getItem(
-            "quotaloop.desktop.last-notification-event",
-          ),
+          lastEventKey: authorityRef.current.lastNotificationKey,
         })
       )
         return;
@@ -321,10 +321,7 @@ function PopoverApp() {
         title: "QuotaLoop demo action complete",
         body: "Synthetic provider action completed locally.",
       });
-      localStorage.setItem(
-        "quotaloop.desktop.last-notification-event",
-        eventKey,
-      );
+      authorityRef.current.lastNotificationKey = eventKey;
     } catch {
       setNotice("Native notification permission is unavailable.");
     }
@@ -334,6 +331,9 @@ function PopoverApp() {
       let permission = await isPermissionGranted();
       if (!permission) permission = (await requestPermission()) === "granted";
       setNotificationPermission(permission ? "granted" : "denied");
+      authorityRef.current.setNotificationPermission(
+        permission ? "granted" : "denied",
+      );
       if (permission)
         await sendNotification({
           title: "QuotaLoop test notification",
@@ -342,15 +342,28 @@ function PopoverApp() {
       else setNotice("Native notification permission was denied.");
     } catch {
       setNotificationPermission("unavailable");
+      authorityRef.current.setNotificationPermission("unavailable");
       setNotice("Native notifications are unavailable in this environment.");
     }
   };
   const toggleNotifications = () => {
     const next = !notificationsEnabled;
     setNotificationsEnabled(next);
-    localStorage.setItem(
-      "quotaloop.desktop.notifications",
-      JSON.stringify({ enabled: next, actionCompleted: true }),
+    authorityRef.current.setNotificationPreferences({
+      enabled: next,
+      actionCompleted: true,
+    });
+    void invoke("broadcast_desktop_snapshot", {
+      snapshot: authorityRef.current.getSnapshot(),
+    });
+  };
+  const moveTab = (event: React.KeyboardEvent, tab: PopoverTab) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const next =
+      event.key === "Home" || event.key === "ArrowLeft" ? "quota" : "modelLab";
+    setActiveTab(
+      event.key === "End" || event.key === "ArrowRight" ? "modelLab" : next,
     );
   };
   return (
@@ -361,6 +374,10 @@ function PopoverApp() {
             role="tab"
             aria-selected={activeTab === "quota"}
             className={activeTab === "quota" ? "tab active" : "tab"}
+            id="tab-quota"
+            aria-controls="panel-quota"
+            tabIndex={activeTab === "quota" ? 0 : -1}
+            onKeyDown={(event) => moveTab(event, "quota")}
             onClick={() => setActiveTab("quota")}
           >
             QUOTA
@@ -369,6 +386,10 @@ function PopoverApp() {
             role="tab"
             aria-selected={activeTab === "modelLab"}
             className={activeTab === "modelLab" ? "tab active" : "tab"}
+            id="tab-model-lab"
+            aria-controls="panel-model-lab"
+            tabIndex={activeTab === "modelLab" ? 0 : -1}
+            onKeyDown={(event) => moveTab(event, "modelLab")}
             onClick={() => setActiveTab("modelLab")}
           >
             MODEL LAB
@@ -383,9 +404,15 @@ function PopoverApp() {
         </button>
       </header>
       {activeTab === "modelLab" ? (
-        <ModelLabPopover status={modelLabStatus} />
+        <div
+          id="panel-model-lab"
+          role="tabpanel"
+          aria-labelledby="tab-model-lab"
+        >
+          <ModelLabPopover status={modelLabStatus} />
+        </div>
       ) : (
-        <>
+        <div id="panel-quota" role="tabpanel" aria-labelledby="tab-quota">
           <section className="provider demo-provider">
             <div>
               <b>Codex Demo</b>
@@ -410,13 +437,23 @@ function PopoverApp() {
             <small>Quota values are synthetic demo data.</small>
           </section>
           <div className="provider-list">
-            {providers.map((provider) => (
-              <ProviderRow
-                key={provider.id}
-                provider={provider}
-                detection={detections[provider.id]!}
-              />
-            ))}
+            {providers
+              .filter(
+                (provider) =>
+                  servicePreferences.find(
+                    (item) => item.serviceId === provider.id,
+                  )?.enabled !== false &&
+                  servicePreferences.find(
+                    (item) => item.serviceId === provider.id,
+                  )?.visibleInQuota !== false,
+              )
+              .map((provider) => (
+                <ProviderRow
+                  key={provider.id}
+                  provider={provider}
+                  detection={detections[provider.id]!}
+                />
+              ))}
           </div>
           <section className="automation">
             <div>
@@ -489,7 +526,7 @@ function PopoverApp() {
               </div>
             ))}
           </section>
-        </>
+        </div>
       )}
     </main>
   );
@@ -500,19 +537,23 @@ function ModelLabPopover({
 }: {
   status: "idle" | "running" | "completed";
 }) {
+  const viewModel = modelLabViewModel();
   return (
     <section className="model-lab-popover">
       <p className="eyebrow">MODEL LAB · SYNTHETIC</p>
       <h2>Local model summary</h2>
       <div className="lab-metrics">
         <strong>
-          24<small>Free models</small>
+          {viewModel.freeCount}
+          <small>Free models</small>
         </strong>
         <strong>
-          3<small>New today</small>
+          {viewModel.newCount}
+          <small>New today</small>
         </strong>
         <strong>
-          12<small>Measured</small>
+          {viewModel.measuredCount}
+          <small>Measured</small>
         </strong>
       </div>
       <p className="muted">
@@ -521,15 +562,11 @@ function ModelLabPopover({
       </p>
       <section className="provider demo-provider">
         <b>Latest synthetic result</b>
-        <p>
-          Demo Model A <strong>86</strong>
-        </p>
-        <p>
-          Demo Model B <strong>81</strong>
-        </p>
-        <p>
-          Demo Model C <strong>77</strong>
-        </p>
+        {viewModel.scores.map((score) => (
+          <p key={score.modelId}>
+            {score.name} <strong>{score.score}</strong>
+          </p>
+        ))}
       </section>
       <p className="model-lab-status">
         {status === "running"
@@ -708,16 +745,18 @@ function DashboardApp() {
         </section>
         <section className="dashboard-card" data-section="history">
           <h2>History</h2>
-          {history.length ? (
-            history.slice(0, 5).map((item) => (
-              <p key={item.id}>
-                <b>{item.outcome}</b> ·{" "}
-                {new Date(item.completedAt).toLocaleString()} · {item.reason}
-              </p>
-            ))
-          ) : (
-            <p>No execution records.</p>
-          )}
+          <HistoryList>
+            {history.length ? (
+              history.slice(0, 5).map((item) => (
+                <p key={item.id}>
+                  <b>{item.outcome}</b> ·{" "}
+                  {new Date(item.completedAt).toLocaleString()} · {item.reason}
+                </p>
+              ))
+            ) : (
+              <p>No execution records.</p>
+            )}
+          </HistoryList>
         </section>
         <section className="dashboard-card" data-section="signals">
           <h2>Signals</h2>
@@ -727,10 +766,12 @@ function DashboardApp() {
         </section>
         <section className="dashboard-card" data-section="subscriptions">
           <h2>Subscriptions</h2>
-          <p>
-            Local subscription model is empty in this beta; cloud billing is
-            disabled.
-          </p>
+          <SubscriptionList>
+            <p>
+              Local subscription model is empty in this beta; cloud billing is
+              disabled.
+            </p>
+          </SubscriptionList>
         </section>
         <section className="dashboard-card" data-section="settings">
           <h2>Settings &amp; safety</h2>
