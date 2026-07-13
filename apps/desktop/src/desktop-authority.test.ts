@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type {
   DesktopRequestEnvelope,
   DesktopRequestType,
+  OpenRouterBenchmarkResult,
 } from "@quotaloop/contracts";
 import { DesktopAuthority } from "./desktop-authority";
 import {
@@ -220,5 +221,104 @@ describe("DesktopAuthority transport and lifecycle", () => {
     expect(result.reason).toBe("reset_generation");
     expect(authority.getSnapshot().modelLabRunState.status).toBe("idle");
     expect(authority.getSnapshot().persistent.modelLabHistory).toEqual([]);
+  });
+
+  it("hydrates a live catalog through the authority and persists a resumable run", async () => {
+    const authority = new DesktopAuthority();
+    await authority.hydrate();
+    const catalogResult = await authority.handleRequest(
+      request("openrouter_catalog_refresh_requested", {}),
+      {
+        openrouterCatalog: async () => ({
+          data: [
+            {
+              id: "vendor/model:free",
+              name: "Free fixture",
+              pricing: { prompt: "0", completion: "0" },
+            },
+          ],
+        }),
+      },
+    );
+    expect(catalogResult.accepted).toBe(true);
+    const catalog = authority.getSnapshot().openrouter.catalog!;
+    const benchmarkResult: OpenRouterBenchmarkResult = {
+      id: "run-1",
+      modelId: "vendor/model:free",
+      modelName: "Free fixture",
+      manifestId: "quotaloop.openrouter.free-benchmark.v1",
+      catalogHash: catalog.catalogHash,
+      completedAt: new Date().toISOString(),
+      outcome: "success",
+      metrics: null,
+      caseScores: [],
+    };
+    const runResult = await authority.handleRequest(
+      request("openrouter_benchmark_requested", {
+        modelIds: ["vendor/model:free"],
+        catalogHash: catalog.catalogHash,
+      }),
+      {
+        openrouterKeyStatus: async () => ({ configured: true }),
+        openrouterRunModel: async () => benchmarkResult,
+      },
+    );
+    expect(runResult.accepted).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(
+      authority.getSnapshot().openrouter.benchmarkResults[0]?.modelId,
+    ).toBe("vendor/model:free");
+    expect(
+      authority.getSnapshot().openrouter.benchmarkRun.completedModelIds,
+    ).toEqual(["vendor/model:free"]);
+    expect(values.get(DESKTOP_STATE_KEY)).toContain("vendor/model:free");
+  });
+
+  it("does not write a completion after authority reset cancels a live run", async () => {
+    const authority = new DesktopAuthority();
+    await authority.hydrate();
+    await authority.handleRequest(
+      request("openrouter_catalog_refresh_requested", {}),
+      {
+        openrouterCatalog: async () => ({
+          data: [
+            {
+              id: "vendor/model:free",
+              pricing: { prompt: "0", completion: "0" },
+            },
+          ],
+        }),
+      },
+    );
+    let finish!: (result: OpenRouterBenchmarkResult) => void;
+    const pending = new Promise<OpenRouterBenchmarkResult>((resolve) => {
+      finish = resolve;
+    });
+    const catalog = authority.getSnapshot().openrouter.catalog!;
+    await authority.handleRequest(
+      request("openrouter_benchmark_requested", {
+        modelIds: ["vendor/model:free"],
+        catalogHash: catalog.catalogHash,
+      }),
+      {
+        openrouterKeyStatus: async () => ({ configured: true }),
+        openrouterRunModel: async () => pending,
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    authority.reset();
+    finish({
+      id: "late",
+      modelId: "vendor/model:free",
+      modelName: "late",
+      manifestId: "quotaloop.openrouter.free-benchmark.v1",
+      catalogHash: catalog.catalogHash,
+      completedAt: new Date().toISOString(),
+      outcome: "success",
+      metrics: null,
+      caseScores: [],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(authority.getSnapshot().openrouter.benchmarkResults).toEqual([]);
   });
 });

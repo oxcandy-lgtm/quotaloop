@@ -28,6 +28,9 @@ import type {
   DesktopRequestType,
   DesktopRuntimeSnapshotV2,
   ExecutionRecord,
+  OpenRouterKeyStatus,
+  OpenRouterBenchmarkResult,
+  OpenRouterPersistentState,
   QuotaAutomationPolicy,
   Subscription,
 } from "@quotaloop/contracts";
@@ -39,6 +42,9 @@ import {
   modelLabViewModel,
   syntheticCatalog,
 } from "./model-lab/synthetic-catalog";
+import { catalogCounts } from "./openrouter/catalog";
+import { OPENROUTER_BENCHMARK_MANIFEST } from "./openrouter/benchmark-manifest";
+import { scoreBenchmark } from "./openrouter/scoring";
 import "./styles.css";
 
 type PopoverTab = "quota" | "modelLab";
@@ -80,6 +86,60 @@ const makeRequest = <T,>(
   type,
   payload,
 });
+
+type NativeOpenRouterBenchmarkResponse = Omit<
+  OpenRouterBenchmarkResult,
+  "metrics" | "caseScores"
+> & {
+  answerText?: string;
+};
+
+async function runNativeOpenRouterModel(input: {
+  modelId: string;
+  runId: string;
+  manifest: typeof OPENROUTER_BENCHMARK_MANIFEST;
+  catalogHash?: string;
+}): Promise<OpenRouterBenchmarkResult> {
+  const raw = await invoke<NativeOpenRouterBenchmarkResponse>(
+    "run_openrouter_benchmark_model",
+    {
+      ...input,
+      manifest: { ...input.manifest, catalogHash: input.catalogHash },
+    },
+  );
+  const answers: Record<string, string> = {};
+  try {
+    const parsed = JSON.parse(raw.answerText ?? "") as unknown;
+    if (Array.isArray(parsed)) {
+      for (const item of parsed) {
+        if (
+          item &&
+          typeof item === "object" &&
+          typeof (item as Record<string, unknown>).id === "string" &&
+          typeof (item as Record<string, unknown>).answer === "string"
+        ) {
+          const record = item as { id: string; answer: string };
+          answers[record.id] = record.answer;
+        }
+      }
+    }
+  } catch {
+    // Invalid model output is scored as zero by the deterministic scorer.
+  }
+  const scored = scoreBenchmark(input.manifest.cases, answers);
+  return {
+    id: raw.id,
+    modelId: raw.modelId,
+    modelName: raw.modelName,
+    manifestId: raw.manifestId,
+    catalogHash: raw.catalogHash,
+    completedAt: raw.completedAt,
+    outcome: raw.outcome,
+    ...(raw.errorCode ? { errorCode: raw.errorCode } : {}),
+    metrics: scored.metrics,
+    caseScores: scored.caseScores,
+  };
+}
 function PopoverApp() {
   const [detections, setDetections] = useState<Record<string, Detection>>(() =>
     Object.fromEntries(
@@ -95,6 +155,11 @@ function PopoverApp() {
     AIServicePreference[]
   >(() => defaultServicePreferences());
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
+  const [modelLabMode, setModelLabMode] = useState<"synthetic" | "live">(
+    "synthetic",
+  );
+  const [openrouter, setOpenrouter] =
+    useState<OpenRouterPersistentState | null>(null);
   const [history, setHistory] = useState<History[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [policy, setPolicyState] = useState<QuotaAutomationPolicy>(() => ({
@@ -153,6 +218,13 @@ function PopoverApp() {
         modelLabAction: async () => {
           await new Promise<void>((resolve) => window.setTimeout(resolve, 250));
         },
+        openrouterCatalog: async () => invoke("fetch_openrouter_catalog"),
+        openrouterRunModel: runNativeOpenRouterModel,
+        openrouterCancel: async () => {
+          await invoke("cancel_openrouter_benchmark");
+        },
+        openrouterKeyStatus: async () =>
+          invoke<OpenRouterKeyStatus>("openrouter_key_status"),
       },
     );
     await invoke("broadcast_desktop_ack", { result });
@@ -172,6 +244,19 @@ function PopoverApp() {
         setModelLabStatus("idle");
     });
   };
+  const refreshOpenRouter = () => {
+    void dispatchRequest("openrouter_catalog_refresh_requested", {});
+  };
+  const runOpenRouter = (modelIds: string[]) => {
+    if (!openrouter?.catalog) {
+      setNotice("Refresh the OpenRouter free catalog first.");
+      return;
+    }
+    void dispatchRequest("openrouter_benchmark_requested", {
+      modelIds,
+      catalogHash: openrouter.catalog.catalogHash,
+    });
+  };
   useEffect(() => {
     void refresh();
     const requestUnlisten = listen<unknown>("desktop-requested", (event) => {
@@ -181,6 +266,13 @@ function PopoverApp() {
           manualAction: performManualAction,
           modelLabAction: async () =>
             new Promise<void>((resolve) => window.setTimeout(resolve, 250)),
+          openrouterCatalog: async () => invoke("fetch_openrouter_catalog"),
+          openrouterRunModel: runNativeOpenRouterModel,
+          openrouterCancel: async () => {
+            await invoke("cancel_openrouter_benchmark");
+          },
+          openrouterKeyStatus: async () =>
+            invoke<OpenRouterKeyStatus>("openrouter_key_status"),
         })
         .then((result) => invoke("broadcast_desktop_ack", { result }));
     });
@@ -209,6 +301,7 @@ function PopoverApp() {
       setSelectedModelIds(
         snapshot.persistent.modelLabPreferences.selectedModelIds,
       );
+      setOpenrouter(snapshot.openrouter);
       setNotificationsEnabled(
         snapshot.persistent.preferences.notifications.enabled,
       );
@@ -227,6 +320,7 @@ function PopoverApp() {
       setSelectedModelIds(
         hydrated.persistent.modelLabPreferences.selectedModelIds,
       );
+      setOpenrouter(hydrated.openrouter);
       setNotificationsEnabled(
         hydrated.persistent.preferences.notifications.enabled,
       );
@@ -385,6 +479,8 @@ function PopoverApp() {
           <ModelLabPopover
             status={modelLabStatus}
             onRun={runModelLab}
+            mode={modelLabMode}
+            onModeChange={setModelLabMode}
             selectedModelIds={selectedModelIds}
             onToggleModel={(modelId) => {
               const next = selectedModelIds.includes(modelId)
@@ -396,6 +492,18 @@ function PopoverApp() {
                 if (result.accepted) setSelectedModelIds(next);
               });
             }}
+            openrouter={openrouter}
+            onRefreshOpenRouter={refreshOpenRouter}
+            onRunOpenRouter={runOpenRouter}
+            onPauseOpenRouter={() =>
+              void dispatchRequest("openrouter_benchmark_pause_requested", {})
+            }
+            onResumeOpenRouter={() =>
+              void dispatchRequest("openrouter_benchmark_resume_requested", {})
+            }
+            onCancelOpenRouter={() =>
+              void dispatchRequest("openrouter_benchmark_cancel_requested", {})
+            }
           />
         </div>
       ) : (
@@ -522,73 +630,209 @@ function PopoverApp() {
 function ModelLabPopover({
   status,
   onRun,
+  mode,
+  onModeChange,
   selectedModelIds,
   onToggleModel,
+  openrouter,
+  onRefreshOpenRouter,
+  onRunOpenRouter,
+  onPauseOpenRouter,
+  onResumeOpenRouter,
+  onCancelOpenRouter,
 }: {
   status: "idle" | "running" | "completed";
   onRun: () => void;
+  mode: "synthetic" | "live";
+  onModeChange: (mode: "synthetic" | "live") => void;
   selectedModelIds: string[];
   onToggleModel: (modelId: string) => void;
+  openrouter: OpenRouterPersistentState | null;
+  onRefreshOpenRouter: () => void;
+  onRunOpenRouter: (modelIds: string[]) => void;
+  onPauseOpenRouter: () => void;
+  onResumeOpenRouter: () => void;
+  onCancelOpenRouter: () => void;
 }) {
   const viewModel = modelLabViewModel();
+  const liveCatalog = openrouter?.catalog;
+  const liveRun = openrouter?.benchmarkRun;
+  const [liveSelectedModelIds, setLiveSelectedModelIds] = useState<string[]>([]);
+  useEffect(() => {
+    if (!liveCatalog) return;
+    setLiveSelectedModelIds((current) => {
+      const eligible = new Set(liveCatalog.eligibleModels.map((model) => model.id));
+      const retained = current.filter((id) => eligible.has(id));
+      return retained.length ? retained : liveCatalog.eligibleModels.map((model) => model.id);
+    });
+  }, [liveCatalog]);
   return (
     <section className="model-lab-popover">
-      <p className="eyebrow">MODEL LAB · SYNTHETIC</p>
-      <h2>Local model summary</h2>
-      <div className="lab-metrics">
-        <strong>
-          {viewModel.freeCount}
-          <small>Free models</small>
-        </strong>
-        <strong>
-          {viewModel.newCount}
-          <small>New today</small>
-        </strong>
-        <strong>
-          {viewModel.measuredCount}
-          <small>Measured</small>
-        </strong>
-      </div>
-      <p className="muted">
-        Catalog and benchmark values are synthetic fixtures. No external
-        requests.
-      </p>
-      <section className="provider demo-provider">
-        <b>Latest synthetic result</b>
-        {viewModel.scores.map((score) => (
-          <p key={score.modelId}>
-            {score.name} <strong>{score.score}</strong>
-          </p>
-        ))}
-      </section>
-      <fieldset className="model-selection">
-        <legend>Models to benchmark</legend>
-        {syntheticCatalog.slice(0, 8).map((model) => (
-          <label key={model.id}>
-            <input
-              type="checkbox"
-              checked={selectedModelIds.includes(model.id)}
-              onChange={() => onToggleModel(model.id)}
-            />
-            {model.name} <small>Demo / Synthetic</small>
-          </label>
-        ))}
-      </fieldset>
-      <p className="model-lab-status">
-        {status === "running"
-          ? "Synthetic benchmark running…"
-          : status === "completed"
-            ? "Synthetic benchmark complete."
-            : "Ready for a manual run."}
-      </p>
-      <button className="primary" onClick={onRun}>
-        Run synthetic benchmark
-      </button>
-      <button
-        onClick={() => void invoke("open_dashboard", { section: "model_lab" })}
+      <div
+        className="settings-option-list"
+        role="group"
+        aria-label="Model Lab mode"
       >
-        Open full results
-      </button>
+        <button
+          className={mode === "synthetic" ? "active" : ""}
+          onClick={() => onModeChange("synthetic")}
+        >
+          DEMO / SYNTHETIC
+        </button>
+        <button
+          className={mode === "live" ? "active" : ""}
+          onClick={() => onModeChange("live")}
+        >
+          LIVE / OPENROUTER
+        </button>
+      </div>
+      <p className="eyebrow">
+        MODEL LAB · {mode === "live" ? "LIVE / OPENROUTER" : "DEMO / SYNTHETIC"}
+      </p>
+      <h2>Local model summary</h2>
+      {mode === "live" ? (
+        <>
+          <div className="lab-metrics">
+            <strong>
+              {catalogCounts(liveCatalog ?? null).eligible}
+              <small>Free eligible</small>
+            </strong>
+            <strong>
+              {catalogCounts(liveCatalog ?? null).excluded}
+              <small>Excluded</small>
+            </strong>
+            <strong>
+              {liveRun?.progress ?? 0}%<small>Progress</small>
+            </strong>
+          </div>
+          <p className="muted">
+            OpenRouter catalog is live; benchmark requests run only after an
+            explicit click. Paid models and router aliases are excluded.
+          </p>
+          <button onClick={onRefreshOpenRouter}>Refresh free catalog</button>
+          <fieldset className="model-selection">
+            <legend>Free models to benchmark</legend>
+            {(liveCatalog?.eligibleModels.slice(0, 12) ?? []).map((model) => (
+              <label key={model.id}>
+                <input
+                  type="checkbox"
+                  checked={liveSelectedModelIds.includes(model.id)}
+                  onChange={() =>
+                    setLiveSelectedModelIds((current) =>
+                      current.includes(model.id)
+                        ? current.filter((id) => id !== model.id)
+                        : [...current, model.id],
+                    )
+                  }
+                />
+                {model.name} <small>LIVE / OPENROUTER · {model.id}</small>
+              </label>
+            ))}
+          </fieldset>
+          <p className="model-lab-status">
+            {liveRun?.status ?? "idle"} ·{" "}
+            {liveRun?.currentModelId ?? "No model running"}
+          </p>
+          <button
+            className="primary"
+            onClick={() =>
+              onRunOpenRouter(
+                liveSelectedModelIds,
+              )
+            }
+            disabled={!liveCatalog || liveRun?.status === "running"}
+          >
+            Run all free models
+          </button>
+          <button
+            onClick={onPauseOpenRouter}
+            disabled={liveRun?.status !== "running"}
+          >
+            Pause
+          </button>
+          <button
+            onClick={onResumeOpenRouter}
+            disabled={
+              liveRun?.status !== "paused" && liveRun?.status !== "interrupted"
+            }
+          >
+            Resume
+          </button>
+          <button
+            onClick={onCancelOpenRouter}
+            disabled={
+              liveRun?.status !== "running" && liveRun?.status !== "paused"
+            }
+          >
+            Cancel
+          </button>
+          {(openrouter?.benchmarkResults ?? []).slice(0, 5).map((result) => (
+            <p key={result.id}>
+              {result.modelName} · {result.outcome} ·{" "}
+              {result.metrics?.overallScore ?? 0}
+            </p>
+          ))}
+        </>
+      ) : (
+        <>
+          <div className="lab-metrics">
+            <strong>
+              {viewModel.freeCount}
+              <small>Free models</small>
+            </strong>
+            <strong>
+              {viewModel.newCount}
+              <small>New today</small>
+            </strong>
+            <strong>
+              {viewModel.measuredCount}
+              <small>Measured</small>
+            </strong>
+          </div>
+          <p className="muted">
+            Catalog and benchmark values are synthetic fixtures. No external
+            requests.
+          </p>
+          <section className="provider demo-provider">
+            <b>Latest synthetic result</b>
+            {viewModel.scores.map((score) => (
+              <p key={score.modelId}>
+                {score.name} <strong>{score.score}</strong>
+              </p>
+            ))}
+          </section>
+          <fieldset className="model-selection">
+            <legend>Models to benchmark</legend>
+            {syntheticCatalog.slice(0, 8).map((model) => (
+              <label key={model.id}>
+                <input
+                  type="checkbox"
+                  checked={selectedModelIds.includes(model.id)}
+                  onChange={() => onToggleModel(model.id)}
+                />
+                {model.name} <small>Demo / Synthetic</small>
+              </label>
+            ))}
+          </fieldset>
+          <p className="model-lab-status">
+            {status === "running"
+              ? "Synthetic benchmark running…"
+              : status === "completed"
+                ? "Synthetic benchmark complete."
+                : "Ready for a manual run."}
+          </p>
+          <button className="primary" onClick={onRun}>
+            Run synthetic benchmark
+          </button>
+          <button
+            onClick={() =>
+              void invoke("open_dashboard", { section: "model_lab" })
+            }
+          >
+            Open full results
+          </button>
+        </>
+      )}
     </section>
   );
 }
@@ -812,6 +1056,35 @@ function DashboardApp() {
         <section className="dashboard-card" data-section="model_lab">
           <h2>Model Lab</h2>
           <p>Local synthetic catalog and benchmark fixtures only.</p>
+          <p>
+            Live OpenRouter catalog:{" "}
+            {snapshot.openrouter.catalog?.eligibleModels.length ?? 0} free
+            models · run {snapshot.openrouter.benchmarkRun.status}
+          </p>
+          <button
+            onClick={() => request("openrouter_catalog_refresh_requested", {})}
+          >
+            Refresh OpenRouter free catalog
+          </button>
+          <button
+            onClick={() =>
+              request("openrouter_benchmark_requested", {
+                modelIds:
+                  snapshot.openrouter.catalog?.eligibleModels.map(
+                    (model) => model.id,
+                  ) ?? [],
+                catalogHash:
+                  snapshot.openrouter.catalog?.catalogHash ?? "missing",
+              })
+            }
+            disabled={
+              !snapshot.openrouter.catalog ||
+              snapshot.openrouter.benchmarkRun.status === "running"
+            }
+          >
+            Run live free-model benchmark
+          </button>
+          <p>Live results are never mixed into synthetic history.</p>
           <p>
             Runtime: {snapshot.modelLabRunState.status} ·{" "}
             {snapshot.modelLabRunState.progress}%
@@ -1083,6 +1356,10 @@ function SettingsPanel({
 }) {
   const [activeSection, setActiveSection] =
     useState<SettingsSection>("ai_services");
+  const openrouterKeyRef = useRef<HTMLInputElement>(null);
+  const [openrouterKeyStatus, setOpenrouterKeyStatus] =
+    useState<OpenRouterKeyStatus | null>(null);
+  const [openrouterBusy, setOpenrouterBusy] = useState(false);
   const [subscriptionDraft, setSubscriptionDraft] = useState<Subscription>({
     id: "",
     providerId: "codex-demo",
@@ -1099,6 +1376,17 @@ function SettingsPanel({
   const demoServicePreference = servicePreferences.find(
     (preference) => preference.serviceId === "codex-demo",
   );
+  useEffect(() => {
+    void invoke<OpenRouterKeyStatus>("openrouter_key_status")
+      .then(setOpenrouterKeyStatus)
+      .catch(() =>
+        setOpenrouterKeyStatus({
+          configured: false,
+          source: "none",
+          lastFour: null,
+        }),
+      );
+  }, []);
   const subscriptions = snapshot.persistent.subscriptions;
   const addSubscription = () => {
     const subscription = {
@@ -1173,7 +1461,41 @@ function SettingsPanel({
   const renderModelLab = () => (
     <>
       <h2>Model Lab</h2>
-      <p>Manual Demo / Synthetic fixtures only. No network or real provider.</p>
+      <p>
+        Demo / Synthetic fixtures remain offline. Live / OpenRouter is explicit
+        and never mixed with synthetic results.
+      </p>
+      <p>
+        OpenRouter free catalog:{" "}
+        {snapshot.openrouter.catalog?.eligibleModels.length ?? 0} eligible ·{" "}
+        {snapshot.openrouter.catalog?.excludedModels.length ?? 0} excluded
+      </p>
+      <button
+        onClick={() => request("openrouter_catalog_refresh_requested", {})}
+      >
+        Refresh live catalog
+      </button>
+      <button
+        onClick={() =>
+          request("openrouter_benchmark_requested", {
+            modelIds:
+              snapshot.openrouter.catalog?.eligibleModels.map(
+                (model) => model.id,
+              ) ?? [],
+            catalogHash: snapshot.openrouter.catalog?.catalogHash ?? "missing",
+          })
+        }
+        disabled={
+          !snapshot.openrouter.catalog ||
+          snapshot.openrouter.benchmarkRun.status === "running"
+        }
+      >
+        Run live free-model benchmark
+      </button>
+      <p>
+        Live run: {snapshot.openrouter.benchmarkRun.status} ·{" "}
+        {snapshot.openrouter.benchmarkRun.progress}%
+      </p>
       <p>
         Status: {snapshot.modelLabRunState.status} ·{" "}
         {snapshot.modelLabRunState.progress}%
@@ -1403,11 +1725,74 @@ function SettingsPanel({
     <>
       <h2>Advanced / Safety</h2>
       <h3>API Connections</h3>
-      <p>Credential support unavailable.</p>
-      <p>Secure credential storage is not connected in this build.</p>
       <p>
-        No secret input, Reveal, Copy, Test, masked fake secret, persistence,
-        authentication, or external request is available.
+        OpenRouter free-model access uses the native macOS Keychain or Windows
+        Credential Manager.
+      </p>
+      <p>
+        Status:{" "}
+        {openrouterKeyStatus?.configured
+          ? `Configured (${openrouterKeyStatus.source})`
+          : "Not configured"}
+      </p>
+      <label>
+        OpenRouter API key
+        <input
+          ref={openrouterKeyRef}
+          type="password"
+          autoComplete="off"
+          placeholder="sk-or-…"
+          aria-label="OpenRouter API key"
+        />
+      </label>
+      <div className="settings-option-list">
+        <button
+          disabled={openrouterBusy}
+          onClick={() => {
+            const key = openrouterKeyRef.current?.value.trim() ?? "";
+            if (!key) return;
+            setOpenrouterBusy(true);
+            void invoke<OpenRouterKeyStatus>("save_openrouter_key", { key })
+              .then((status) => {
+                setOpenrouterKeyStatus(status);
+                if (openrouterKeyRef.current)
+                  openrouterKeyRef.current.value = "";
+              })
+              .catch(() => undefined)
+              .finally(() => setOpenrouterBusy(false));
+          }}
+        >
+          Save key
+        </button>
+        <button
+          disabled={openrouterBusy || !openrouterKeyStatus?.configured}
+          onClick={() => {
+            setOpenrouterBusy(true);
+            void invoke("test_openrouter_connection")
+              .then(() => undefined)
+              .catch(() => undefined)
+              .finally(() => setOpenrouterBusy(false));
+          }}
+        >
+          Test connection
+        </button>
+        <button
+          disabled={openrouterBusy || !openrouterKeyStatus?.configured}
+          onClick={() => {
+            if (!window.confirm("Delete the saved OpenRouter key?")) return;
+            setOpenrouterBusy(true);
+            void invoke<OpenRouterKeyStatus>("delete_openrouter_key")
+              .then(setOpenrouterKeyStatus)
+              .catch(() => undefined)
+              .finally(() => setOpenrouterBusy(false));
+          }}
+        >
+          Delete key
+        </button>
+      </div>
+      <p>
+        The key is never written to localStorage, JSON state, benchmark results,
+        logs, or events. Reveal and Copy are intentionally unavailable.
       </p>
     </>
   );

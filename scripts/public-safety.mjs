@@ -14,6 +14,7 @@ const rules = [
   ["private key", /-----BEGIN\s+(?:[A-Z]+\s+)?PRIVATE KEY-----/],
   ["github token", /gh[pousr]_[A-Za-z0-9]{20,}/],
   ["openai token", /sk-(?:ant-)?[A-Za-z0-9_-]{20,}/],
+  ["openrouter token", /sk-or-(?:v1-)?[A-Za-z0-9_-]{20,}/],
   ["google token", /AIza[0-9A-Za-z_-]{20,}/],
   [
     "generic credential assignment",

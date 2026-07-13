@@ -30,4 +30,15 @@ describe("provider detection registry", () => {
     expect(codex?.supportsQuotaRead).toBe(false);
     expect(codex?.capabilities?.quotaRead).toBe(false);
   });
+
+  it("exposes OpenRouter benchmark capability without fabricating quota values", () => {
+    const openrouter = serviceDefinitions.find(
+      (service) => service.serviceId === "openrouter",
+    );
+    expect(openrouter?.supportsQuotaSurface).toBe(false);
+    expect(openrouter?.supportsQuotaRead).toBe(false);
+    expect(openrouter?.supportsCatalog).toBe(true);
+    expect(openrouter?.supportsBenchmark).toBe(true);
+    expect(openrouter?.credentialMode).toBe("api_key");
+  });
 });

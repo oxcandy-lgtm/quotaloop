@@ -1,6 +1,10 @@
-import type { DesktopPersistentStateV2 } from "@quotaloop/contracts";
+import type {
+  DesktopPersistentStateV2,
+  OpenRouterPersistentState,
+} from "@quotaloop/contracts";
 import {
   automationPolicySchema,
+  emptyOpenRouterPersistentState,
   modelLabSelectionSchema,
 } from "@quotaloop/contracts";
 import { safeDefaultPolicy } from "./automation-controller";
@@ -172,6 +176,88 @@ function parseModelLabSelection(value: unknown) {
   return null;
 }
 
+function parseOpenRouterState(
+  value: unknown,
+  fallback: OpenRouterPersistentState,
+): OpenRouterPersistentState {
+  if (!isRecord(value)) return fallback;
+  const rawCatalog = isRecord(value.catalog) ? value.catalog : null;
+  const isModel = (item: unknown) =>
+    isRecord(item) &&
+    typeof item.id === "string" &&
+    typeof item.name === "string" &&
+    typeof item.canonicalSlug === "string" &&
+    typeof item.promptPrice === "string" &&
+    typeof item.completionPrice === "string" &&
+    item.isFree === true;
+  const isExcluded = (item: unknown) =>
+    isRecord(item) &&
+    typeof item.id === "string" &&
+    ["paid", "router_alias", "missing_id", "malformed", "unsupported"].includes(
+      String(item.reason),
+    );
+  const catalog =
+    rawCatalog &&
+    rawCatalog.schemaVersion === 1 &&
+    typeof rawCatalog.catalogHash === "string" &&
+    typeof rawCatalog.fetchedAt === "string" &&
+    Array.isArray(rawCatalog.eligibleModels) &&
+    rawCatalog.eligibleModels.every(isModel) &&
+    Array.isArray(rawCatalog.excludedModels) &&
+    rawCatalog.excludedModels.every(isExcluded)
+      ? (rawCatalog as unknown as OpenRouterPersistentState["catalog"])
+      : null;
+  const rawRun = isRecord(value.benchmarkRun) ? value.benchmarkRun : {};
+  const statuses = [
+    "idle",
+    "running",
+    "paused",
+    "completed",
+    "failed",
+    "cancelled",
+    "interrupted",
+  ];
+  const benchmarkRun = {
+    ...fallback.benchmarkRun,
+    ...rawRun,
+    status: statuses.includes(String(rawRun.status))
+      ? rawRun.status
+      : fallback.benchmarkRun.status,
+    mode: "live" as const,
+    concurrency: 1 as const,
+    delayMs: 3200 as const,
+    modelIds: Array.isArray(rawRun.modelIds)
+      ? rawRun.modelIds
+          .filter((item): item is string => typeof item === "string")
+          .slice(0, 100)
+      : [],
+    completedModelIds: Array.isArray(rawRun.completedModelIds)
+      ? rawRun.completedModelIds
+          .filter((item): item is string => typeof item === "string")
+          .slice(0, 100)
+      : [],
+    progress:
+      typeof rawRun.progress === "number" && Number.isFinite(rawRun.progress)
+        ? Math.max(0, Math.min(100, rawRun.progress))
+        : 0,
+  } as OpenRouterPersistentState["benchmarkRun"];
+  const benchmarkResults = Array.isArray(value.benchmarkResults)
+    ? (
+        value.benchmarkResults.filter(
+          (item) =>
+            isRecord(item) &&
+            typeof item.id === "string" &&
+            typeof item.modelId === "string" &&
+            typeof item.completedAt === "string" &&
+            ["success", "failed", "cancelled", "mismatch"].includes(
+              String(item.outcome),
+            ),
+        ) as OpenRouterPersistentState["benchmarkResults"]
+      ).slice(0, 100)
+    : [];
+  return { catalog, benchmarkRun, benchmarkResults };
+}
+
 function parseDesktopState(
   value: unknown,
   fallback: DesktopPersistentStateV2,
@@ -210,6 +296,7 @@ function parseDesktopState(
         ? value.lastNotificationEventKey
         : null,
     preferences: parsePreferences(value.preferences, fallback.preferences),
+    openrouter: parseOpenRouterState(value.openrouter, fallback.openrouter),
   };
 }
 
@@ -228,6 +315,7 @@ export function defaultDesktopState(): DesktopPersistentStateV2 {
     modelLabHistory: [],
     subscriptions: [],
     lastNotificationEventKey: null,
+    openrouter: emptyOpenRouterPersistentState(),
   };
 }
 

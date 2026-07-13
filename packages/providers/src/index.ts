@@ -101,18 +101,24 @@ export const providerCatalog: QuotaProvider[] = [
 export const serviceDefinitions = providerCatalog.map((provider) => ({
   serviceId: provider.id,
   displayName: provider.displayName,
-  integrationLevel: provider.integrationLevel,
+  integrationLevel:
+    provider.id === "openrouter"
+      ? ("manual" as const)
+      : provider.integrationLevel,
   supportsQuotaSurface:
     provider.capabilities.installationDetection ||
     provider.capabilities.quotaRead,
   supportsQuotaRead: provider.capabilities.quotaRead,
   supportsModelLab: true,
   supportsCatalog: true,
-  supportsBenchmark: provider.integrationLevel === "mock",
+  supportsBenchmark:
+    provider.integrationLevel === "mock" || provider.id === "openrouter",
   credentialMode:
     provider.integrationLevel === "mock"
       ? ("none" as const)
-      : ("unavailable" as const),
+      : provider.id === "openrouter"
+        ? ("api_key" as const)
+        : ("unavailable" as const),
   capabilities: provider.capabilities,
 }));
 
@@ -134,3 +140,15 @@ export const detectableServiceDefinitions = serviceDefinitions.filter(
     service.integrationLevel === "detect_only" &&
     service.capabilities?.installationDetection === true,
 );
+
+/** Must stay byte-for-byte aligned with DETECTABLE_PROVIDER_IDS in Rust. */
+export const rustDetectableProviderIds = [
+  "codex",
+  "claude-code",
+  "gemini-cli",
+  "opencode",
+] as const;
+
+export const detectableRegistryParity =
+  JSON.stringify(detectableServiceIds.slice().sort()) ===
+  JSON.stringify([...rustDetectableProviderIds].sort());
