@@ -17,7 +17,9 @@ pub const DETECTABLE_PROVIDER_IDS: &[&str] = &["codex", "claude-code", "gemini-c
 #[derive(Default)]
 struct PopoverBehaviorState {
     auto_hide_suppressed: AtomicBool,
-    restore_popover_on_settings_destroy: AtomicBool,
+    ignore_next_settings_destroy: AtomicBool,
+    settings_recreate_pending: AtomicBool,
+    application_quitting: AtomicBool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -187,11 +189,59 @@ fn set_auto_hide_suppressed(app: &tauri::AppHandle, suppressed: bool) {
     }
 }
 
-fn set_restore_popover_on_settings_destroy(app: &tauri::AppHandle, restore: bool) {
+fn set_ignore_next_settings_destroy(app: &tauri::AppHandle, ignore: bool) {
     if let Some(state) = app.try_state::<PopoverBehaviorState>() {
         state
-            .restore_popover_on_settings_destroy
-            .store(restore, Ordering::SeqCst);
+            .ignore_next_settings_destroy
+            .store(ignore, Ordering::SeqCst);
+    }
+}
+
+fn set_application_quitting(app: &tauri::AppHandle, quitting: bool) {
+    if let Some(state) = app.try_state::<PopoverBehaviorState>() {
+        state.application_quitting.store(quitting, Ordering::SeqCst);
+    }
+}
+
+fn application_is_quitting(app: &tauri::AppHandle) -> bool {
+    app.try_state::<PopoverBehaviorState>()
+        .map(|state| state.application_quitting.load(Ordering::SeqCst))
+        .unwrap_or(false)
+}
+
+fn try_begin_settings_recreation(app: &tauri::AppHandle) -> bool {
+    app.try_state::<PopoverBehaviorState>()
+        .map(|state| {
+            state
+                .settings_recreate_pending
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        })
+        .unwrap_or(false)
+}
+
+fn take_settings_recreation_pending(app: &tauri::AppHandle) -> bool {
+    app.try_state::<PopoverBehaviorState>()
+        .map(|state| {
+            state
+                .settings_recreate_pending
+                .swap(false, Ordering::SeqCst)
+        })
+        .unwrap_or(false)
+}
+
+fn clear_settings_destroy_marker_state(state: &PopoverBehaviorState) {
+    state
+        .ignore_next_settings_destroy
+        .store(false, Ordering::SeqCst);
+    state
+        .settings_recreate_pending
+        .store(false, Ordering::SeqCst);
+}
+
+fn clear_settings_destroy_markers(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<PopoverBehaviorState>() {
+        clear_settings_destroy_marker_state(&state);
     }
 }
 
@@ -262,12 +312,27 @@ fn settings_window_action(
     }
 }
 
-fn settings_destroy_action(restore_popover: bool) -> SettingsDestroyAction {
-    if restore_popover {
-        SettingsDestroyAction::RestorePopover
-    } else {
+fn consume_settings_destroy_action(
+    ignore_next_settings_destroy: &AtomicBool,
+    application_quitting: &AtomicBool,
+) -> SettingsDestroyAction {
+    let ignore = ignore_next_settings_destroy.swap(false, Ordering::SeqCst);
+    if application_quitting.load(Ordering::SeqCst) || ignore {
         SettingsDestroyAction::ReleaseOnly
+    } else {
+        SettingsDestroyAction::RestorePopover
     }
+}
+
+fn consume_settings_destroy_action_for_app(app: &tauri::AppHandle) -> SettingsDestroyAction {
+    app.try_state::<PopoverBehaviorState>()
+        .map(|state| {
+            consume_settings_destroy_action(
+                &state.ignore_next_settings_destroy,
+                &state.application_quitting,
+            )
+        })
+        .unwrap_or(SettingsDestroyAction::ReleaseOnly)
 }
 
 fn release_settings_suppression(app: &tauri::AppHandle) {
@@ -283,9 +348,61 @@ fn restore_popover_after_settings_close(app: &tauri::AppHandle) {
 }
 
 #[cfg(target_os = "macos")]
+fn cleanup_settings_open_failure(app: &tauri::AppHandle) {
+    clear_settings_destroy_markers(app);
+    restore_popover_after_settings_close(app);
+}
+
+#[cfg(target_os = "macos")]
 fn focus_settings_window(window: &tauri::WebviewWindow) -> Result<(), String> {
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn create_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
+    let window = match WebviewWindowBuilder::new(
+        app,
+        "settings",
+        WebviewUrl::App("index.html?surface=settings".into()),
+    )
+    .title("QuotaLoop Settings")
+    .inner_size(520.0, 620.0)
+    .min_inner_size(480.0, 520.0)
+    .max_inner_size(680.0, 760.0)
+    .resizable(true)
+    .decorations(true)
+    .always_on_top(false)
+    .visible(false)
+    .build()
+    {
+        Ok(window) => window,
+        Err(error) => {
+            cleanup_settings_open_failure(app);
+            return Err(error.to_string());
+        }
+    };
+
+    if let Err(error) = focus_settings_window(&window) {
+        let _ = window.destroy();
+        cleanup_settings_open_failure(app);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn recreate_settings_after_destroy(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        set_auto_hide_suppressed(app, true);
+        if let Err(error) = create_settings_window(app) {
+            eprintln!("failed to recreate Settings window: {error}");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        release_settings_suppression(app);
+    }
 }
 
 fn open_settings_window_internal(app: &tauri::AppHandle) -> Result<(), String> {
@@ -297,8 +414,16 @@ fn open_settings_window_internal(app: &tauri::AppHandle) -> Result<(), String> {
 
     #[cfg(target_os = "macos")]
     {
-        set_restore_popover_on_settings_destroy(app, true);
         set_auto_hide_suppressed(app, true);
+
+        if app
+            .try_state::<PopoverBehaviorState>()
+            .map(|state| state.settings_recreate_pending.load(Ordering::SeqCst))
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+
         let existing = app.get_webview_window("settings");
         let action = settings_window_action(
             true,
@@ -311,58 +436,29 @@ fn open_settings_window_internal(app: &tauri::AppHandle) -> Result<(), String> {
             SettingsWindowAction::FocusExisting => {
                 if let Some(window) = existing {
                     if let Err(error) = focus_settings_window(&window) {
-                        release_settings_suppression(app);
+                        cleanup_settings_open_failure(app);
                         return Err(error);
                     }
                     return Ok(());
                 }
             }
             SettingsWindowAction::DestroyAndCreate => {
-                set_restore_popover_on_settings_destroy(app, false);
                 if let Some(window) = existing {
+                    if !try_begin_settings_recreation(app) {
+                        return Ok(());
+                    }
+                    set_ignore_next_settings_destroy(app, true);
                     if let Err(error) = window.destroy() {
-                        release_settings_suppression(app);
-                        set_restore_popover_on_settings_destroy(app, true);
+                        cleanup_settings_open_failure(app);
                         return Err(error.to_string());
                     }
-                    set_restore_popover_on_settings_destroy(app, true);
-                    set_auto_hide_suppressed(app, true);
+                    // The replacement is created by the matching Destroyed event.
+                    return Ok(());
                 }
             }
             SettingsWindowAction::Create | SettingsWindowAction::DashboardFallback => {}
         }
-
-        let window = WebviewWindowBuilder::new(
-            app,
-            "settings",
-            WebviewUrl::App("index.html?surface=settings".into()),
-        )
-        .title("QuotaLoop Settings")
-        .inner_size(520.0, 620.0)
-        .min_inner_size(480.0, 520.0)
-        .max_inner_size(680.0, 760.0)
-        .resizable(true)
-        .decorations(true)
-        .always_on_top(false)
-        .visible(false)
-        .build()
-        .map_err(|error| error.to_string());
-
-        match window {
-            Ok(window) => {
-                if let Err(error) = focus_settings_window(&window) {
-                    let _ = window.destroy();
-                    restore_popover_after_settings_close(app);
-                    Err(error)
-                } else {
-                    Ok(())
-                }
-            }
-            Err(error) => {
-                restore_popover_after_settings_close(app);
-                Err(error)
-            }
-        }
+        create_settings_window(app)
     }
 }
 
@@ -437,7 +533,8 @@ fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 let _ = app.emit_to("popover", "tray-pause-requested", ());
             }
             "quit" => {
-                set_restore_popover_on_settings_destroy(app, false);
+                set_application_quitting(app, true);
+                clear_settings_destroy_markers(app);
                 set_auto_hide_suppressed(app, false);
                 app.exit(0);
             }
@@ -498,20 +595,19 @@ pub fn run() {
                     }
                     WindowEvent::Destroyed => {
                         let app = window.app_handle();
-                        let restore = app
-                            .try_state::<PopoverBehaviorState>()
-                            .map(|state| {
-                                state
-                                    .restore_popover_on_settings_destroy
-                                    .load(Ordering::SeqCst)
-                            })
-                            .unwrap_or(true);
-                        match settings_destroy_action(restore) {
-                            SettingsDestroyAction::RestorePopover => {
-                                restore_popover_after_settings_close(&app)
-                            }
-                            SettingsDestroyAction::ReleaseOnly => {
-                                release_settings_suppression(&app)
+                        let action = consume_settings_destroy_action_for_app(&app);
+                        if take_settings_recreation_pending(&app) && !application_is_quitting(&app)
+                        {
+                            release_settings_suppression(&app);
+                            recreate_settings_after_destroy(&app);
+                        } else {
+                            match action {
+                                SettingsDestroyAction::RestorePopover => {
+                                    restore_popover_after_settings_close(&app)
+                                }
+                                SettingsDestroyAction::ReleaseOnly => {
+                                    release_settings_suppression(&app)
+                                }
                             }
                         }
                         return;
@@ -557,6 +653,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
     #[test]
     fn allowlist_is_fixed() {
         assert_eq!(
@@ -629,20 +727,103 @@ mod tests {
         );
     }
     #[test]
-    fn settings_user_close_restores_popover_and_next_focus_loss_hides_it() {
+    fn settings_user_close_consumes_no_internal_marker_and_restores_popover() {
+        let marker = AtomicBool::new(false);
+        let quitting = AtomicBool::new(false);
         assert_eq!(
-            settings_destroy_action(true),
+            consume_settings_destroy_action(&marker, &quitting),
             SettingsDestroyAction::RestorePopover
         );
         assert!(should_auto_hide_on_focus_loss(
             true, "popover", false, false
         ));
     }
+
     #[test]
-    fn internal_recreate_and_quit_release_without_popover_restoration() {
+    fn internal_recreate_marker_is_consumed_once_then_normal_close_restores() {
+        let marker = AtomicBool::new(true);
+        let quitting = AtomicBool::new(false);
         assert_eq!(
-            settings_destroy_action(false),
+            consume_settings_destroy_action(&marker, &quitting),
             SettingsDestroyAction::ReleaseOnly
         );
+        assert!(!marker.load(Ordering::SeqCst));
+        assert_eq!(
+            consume_settings_destroy_action(&marker, &quitting),
+            SettingsDestroyAction::RestorePopover
+        );
+    }
+
+    #[test]
+    fn internal_destroy_marker_survives_later_state_changes_until_destroyed_event() {
+        let marker = Arc::new(AtomicBool::new(false));
+        let quitting = Arc::new(AtomicBool::new(false));
+        let unrelated_state = Arc::new(AtomicBool::new(true));
+        let ready = Arc::new(Barrier::new(2));
+        let thread_marker = Arc::clone(&marker);
+        let thread_quitting = Arc::clone(&quitting);
+        let thread_ready = Arc::clone(&ready);
+        let handle = thread::spawn(move || {
+            while !thread_marker.load(Ordering::SeqCst) {
+                thread::yield_now();
+            }
+            thread_ready.wait();
+            consume_settings_destroy_action(&thread_marker, &thread_quitting)
+        });
+
+        marker.store(true, Ordering::SeqCst);
+        unrelated_state.store(false, Ordering::SeqCst);
+        unrelated_state.store(true, Ordering::SeqCst);
+        ready.wait();
+
+        assert_eq!(
+            handle.join().expect("destroy event thread should finish"),
+            SettingsDestroyAction::ReleaseOnly
+        );
+        assert!(!marker.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn two_destroy_reads_after_one_internal_marker_are_deterministic() {
+        let marker = AtomicBool::new(true);
+        let quitting = AtomicBool::new(false);
+        assert_eq!(
+            consume_settings_destroy_action(&marker, &quitting),
+            SettingsDestroyAction::ReleaseOnly
+        );
+        assert_eq!(
+            consume_settings_destroy_action(&marker, &quitting),
+            SettingsDestroyAction::RestorePopover
+        );
+    }
+
+    #[test]
+    fn application_quit_forces_release_only_and_consumes_marker() {
+        let marker = AtomicBool::new(true);
+        let quitting = AtomicBool::new(true);
+        assert_eq!(
+            consume_settings_destroy_action(&marker, &quitting),
+            SettingsDestroyAction::ReleaseOnly
+        );
+        assert!(!marker.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn settings_open_failure_clears_suppression_and_destroy_markers() {
+        let state = PopoverBehaviorState::default();
+        state.auto_hide_suppressed.store(true, Ordering::SeqCst);
+        state
+            .ignore_next_settings_destroy
+            .store(true, Ordering::SeqCst);
+        state
+            .settings_recreate_pending
+            .store(true, Ordering::SeqCst);
+
+        clear_settings_destroy_marker_state(&state);
+        state.auto_hide_suppressed.store(false, Ordering::SeqCst);
+
+        assert!(!state.auto_hide_suppressed.load(Ordering::SeqCst));
+        assert!(!state.ignore_next_settings_destroy.load(Ordering::SeqCst));
+        assert!(!state.settings_recreate_pending.load(Ordering::SeqCst));
     }
 }

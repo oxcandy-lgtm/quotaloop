@@ -29,16 +29,28 @@ describe("macOS Settings window contract", () => {
     expect(rust).toContain("release_settings_suppression");
     expect(rust).toContain('window.label() == "settings"');
 
+    const openSettingsIndex = rust.indexOf("fn open_settings_window_internal");
     const suppressionIndex = rust.indexOf(
       "set_auto_hide_suppressed(app, true);",
+      openSettingsIndex,
     );
-    const focusIndex = rust.indexOf("focus_settings_window(&window)");
+    const focusIndex = rust.indexOf(
+      "focus_settings_window(&window)",
+      openSettingsIndex,
+    );
     expect(suppressionIndex).toBeGreaterThanOrEqual(0);
     expect(focusIndex).toBeGreaterThan(suppressionIndex);
   });
 
-  it("restores the Popover only for a user-visible Settings close", () => {
-    expect(rust).toContain("restore_popover_on_settings_destroy");
+  it("uses a one-shot marker for user close versus internal recreation", () => {
+    expect(rust).toContain("ignore_next_settings_destroy");
+    expect(rust).toContain("settings_recreate_pending");
+    expect(rust).toContain("application_quitting");
+    expect(rust).toContain("consume_settings_destroy_action");
+    const legacyRestoreFlag = ["restore_popover", "on_settings_destroy"].join(
+      "_",
+    );
+    expect(rust).not.toContain(legacyRestoreFlag);
     expect(rust).toContain("SettingsDestroyAction::RestorePopover");
     expect(rust).toContain("SettingsDestroyAction::ReleaseOnly");
     expect(rust).toContain("restore_popover_after_settings_close");
@@ -51,9 +63,22 @@ describe("macOS Settings window contract", () => {
     expect(rust.slice(restoreStart, restoreEnd)).not.toContain(
       "popover.hide()",
     );
-    expect(rust).toContain(
-      "set_restore_popover_on_settings_destroy(app, false);",
-    );
+    expect(rust).toContain("set_ignore_next_settings_destroy(app, true);");
+    expect(rust).toContain("take_settings_recreation_pending(&app)");
+    expect(rust).toContain("create_settings_window(app)");
+  });
+
+  it("cleans marker and suppression state when Settings creation or focus fails", () => {
+    expect(rust).toContain("cleanup_settings_open_failure");
+    expect(rust).toContain("clear_settings_destroy_markers");
+    expect(rust).toContain("restore_popover_after_settings_close(app)");
+    expect(rust).toContain("let _ = window.destroy();");
+  });
+
+  it("does not restore Popover while quitting", () => {
+    expect(rust).toContain("set_application_quitting(app, true);");
+    expect(rust).toContain("application_is_quitting(&app)");
+    expect(rust).toContain("app.exit(0);");
   });
 
   it("keeps the compact dimensions and one-column option contract", () => {
