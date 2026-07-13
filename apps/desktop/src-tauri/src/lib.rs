@@ -5,7 +5,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tauri::menu::MenuBuilder;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, Manager, PhysicalPosition, Position, State, WindowEvent};
+use tauri::{
+    Emitter, Manager, PhysicalPosition, Position, State, WebviewUrl, WebviewWindowBuilder,
+    WindowEvent,
+};
 
 const DETECTION_TIMEOUT: Duration = Duration::from_secs(2);
 const OUTPUT_LIMIT: usize = 16 * 1024;
@@ -146,12 +149,14 @@ fn request_desktop(app: tauri::AppHandle, envelope: serde_json::Value) -> bool {
 
 #[tauri::command]
 fn broadcast_desktop_ack(app: tauri::AppHandle, result: serde_json::Value) {
-    let _ = app.emit_to("dashboard", "desktop-ack", result);
+    let _ = app.emit_to("dashboard", "desktop-ack", &result);
+    let _ = app.emit_to("settings", "desktop-ack", &result);
 }
 
 #[tauri::command]
 fn broadcast_desktop_snapshot(app: tauri::AppHandle, snapshot: serde_json::Value) {
-    let _ = app.emit_to("dashboard", "desktop-snapshot", snapshot);
+    let _ = app.emit_to("dashboard", "desktop-snapshot", &snapshot);
+    let _ = app.emit_to("settings", "desktop-snapshot", &snapshot);
 }
 
 #[tauri::command]
@@ -181,33 +186,161 @@ fn set_auto_hide_suppressed(app: &tauri::AppHandle, suppressed: bool) {
     }
 }
 
-fn should_suppress_auto_hide_for_dashboard_section(section: Option<&str>) -> bool {
-    validated_dashboard_section(section) == "settings"
+fn clear_settings_suppression_if_closed(app: &tauri::AppHandle) {
+    let settings_visible = app
+        .get_webview_window("settings")
+        .and_then(|settings| settings.is_visible().ok())
+        .unwrap_or(false);
+    if !settings_visible {
+        set_auto_hide_suppressed(app, false);
+    }
 }
 
 fn open_dashboard_window(app: &tauri::AppHandle, section: Option<&str>) {
     let selected = validated_dashboard_section(section);
-    set_auto_hide_suppressed(
-        app,
-        should_suppress_auto_hide_for_dashboard_section(section),
-    );
+    clear_settings_suppression_if_closed(app);
     show_window(app, "dashboard");
     let _ = app.emit_to("dashboard", "section-selected", selected);
 }
 
 #[tauri::command]
-fn open_dashboard(app: tauri::AppHandle, section: Option<String>) {
+fn open_dashboard(app: tauri::AppHandle, section: Option<String>) -> Result<(), String> {
+    if validated_dashboard_section(section.as_deref()) == "settings" {
+        return open_settings_window_internal(&app);
+    }
     open_dashboard_window(&app, section.as_deref());
+    Ok(())
 }
 
 #[tauri::command]
-fn set_dashboard_section(state: State<'_, PopoverBehaviorState>, section: String) -> String {
+fn set_dashboard_section(
+    app: tauri::AppHandle,
+    _state: State<'_, PopoverBehaviorState>,
+    section: String,
+) -> String {
     let selected = validated_dashboard_section(Some(section.as_str()));
-    state.auto_hide_suppressed.store(
-        should_suppress_auto_hide_for_dashboard_section(Some(section.as_str())),
-        Ordering::SeqCst,
-    );
+    clear_settings_suppression_if_closed(&app);
     selected.to_string()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SettingsWindowAction {
+    DashboardFallback,
+    Create,
+    FocusExisting,
+    DestroyAndCreate,
+}
+
+fn settings_window_action(
+    is_macos: bool,
+    existing: bool,
+    visible: Option<bool>,
+) -> SettingsWindowAction {
+    if !is_macos {
+        SettingsWindowAction::DashboardFallback
+    } else if existing && visible == Some(true) {
+        SettingsWindowAction::FocusExisting
+    } else if existing {
+        SettingsWindowAction::DestroyAndCreate
+    } else {
+        SettingsWindowAction::Create
+    }
+}
+
+fn release_settings_suppression(app: &tauri::AppHandle) {
+    set_auto_hide_suppressed(app, false);
+    if let Some(popover) = app.get_webview_window("popover") {
+        if !popover.is_focused().unwrap_or(false) {
+            let _ = popover.hide();
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn focus_settings_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+fn open_settings_window_internal(app: &tauri::AppHandle) -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        open_dashboard_window(app, Some("settings"));
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        set_auto_hide_suppressed(app, true);
+        let existing = app.get_webview_window("settings");
+        let action = settings_window_action(
+            true,
+            existing.is_some(),
+            existing
+                .as_ref()
+                .and_then(|window| window.is_visible().ok()),
+        );
+        match action {
+            SettingsWindowAction::FocusExisting => {
+                if let Some(window) = existing {
+                    if let Err(error) = focus_settings_window(&window) {
+                        release_settings_suppression(app);
+                        return Err(error);
+                    }
+                    return Ok(());
+                }
+            }
+            SettingsWindowAction::DestroyAndCreate => {
+                if let Some(window) = existing {
+                    if let Err(error) = window.destroy() {
+                        release_settings_suppression(app);
+                        return Err(error.to_string());
+                    }
+                    // Destroyed is allowed to release suppression; creation must
+                    // re-enable it before the new window receives focus.
+                    set_auto_hide_suppressed(app, true);
+                }
+            }
+            SettingsWindowAction::Create | SettingsWindowAction::DashboardFallback => {}
+        }
+
+        let window = WebviewWindowBuilder::new(
+            app,
+            "settings",
+            WebviewUrl::App("index.html?surface=settings".into()),
+        )
+        .title("QuotaLoop Settings")
+        .inner_size(520.0, 620.0)
+        .min_inner_size(480.0, 520.0)
+        .max_inner_size(680.0, 760.0)
+        .resizable(true)
+        .decorations(true)
+        .always_on_top(false)
+        .visible(false)
+        .build()
+        .map_err(|error| error.to_string());
+
+        match window {
+            Ok(window) => {
+                if let Err(error) = focus_settings_window(&window) {
+                    let _ = window.destroy();
+                    release_settings_suppression(app);
+                    Err(error)
+                } else {
+                    Ok(())
+                }
+            }
+            Err(error) => {
+                release_settings_suppression(app);
+                Err(error)
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    open_settings_window_internal(&app)
 }
 
 #[tauri::command]
@@ -314,6 +447,7 @@ pub fn run() {
             broadcast_desktop_snapshot,
             show_main_window,
             open_dashboard,
+            open_settings_window,
             set_dashboard_section,
             get_window_label,
             hide_main_window,
@@ -328,9 +462,25 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() == "settings" {
+                match event {
+                    WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed => {
+                        release_settings_suppression(&window.app_handle());
+                        return;
+                    }
+                    _ => {}
+                }
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "dashboard" {
-                    set_auto_hide_suppressed(&window.app_handle(), false);
+                    let settings_visible = window
+                        .app_handle()
+                        .get_webview_window("settings")
+                        .and_then(|settings| settings.is_visible().ok())
+                        .unwrap_or(false);
+                    if !settings_visible {
+                        set_auto_hide_suppressed(&window.app_handle(), false);
+                    }
                 }
                 api.prevent_close();
                 let _ = window.hide();
@@ -401,20 +551,33 @@ mod tests {
         ));
     }
     #[test]
-    fn dashboard_section_allowlist_controls_suppression() {
+    fn dashboard_section_allowlist_does_not_control_settings_lifecycle() {
         assert_eq!(validated_dashboard_section(Some("settings")), "settings");
         assert_eq!(validated_dashboard_section(Some("model_lab")), "model_lab");
         assert_eq!(validated_dashboard_section(Some("unexpected")), "overview");
         assert_eq!(validated_dashboard_section(None), "overview");
-        assert!(should_suppress_auto_hide_for_dashboard_section(Some(
-            "settings"
-        )));
-        assert!(!should_suppress_auto_hide_for_dashboard_section(Some(
-            "overview"
-        )));
-        assert!(!should_suppress_auto_hide_for_dashboard_section(Some(
-            "model_lab"
-        )));
-        assert!(!should_suppress_auto_hide_for_dashboard_section(None));
+    }
+    #[test]
+    fn settings_window_lifecycle_is_platform_and_visibility_aware() {
+        assert_eq!(
+            settings_window_action(false, false, None),
+            SettingsWindowAction::DashboardFallback
+        );
+        assert_eq!(
+            settings_window_action(true, false, None),
+            SettingsWindowAction::Create
+        );
+        assert_eq!(
+            settings_window_action(true, true, Some(true)),
+            SettingsWindowAction::FocusExisting
+        );
+        assert_eq!(
+            settings_window_action(true, true, Some(false)),
+            SettingsWindowAction::DestroyAndCreate
+        );
+        assert_eq!(
+            settings_window_action(true, true, None),
+            SettingsWindowAction::DestroyAndCreate
+        );
     }
 }

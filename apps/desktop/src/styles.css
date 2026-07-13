@@ -434,3 +434,124 @@ button:disabled {
   font-size: 12px;
   line-height: 1.5;
 }
+.settings-surface {
+  width: 100%;
+  max-width: 100%;
+  min-height: 100vh;
+  padding: 20px;
+  overflow: hidden;
+  background: #101820;
+  color: #dfe7ef;
+}
+.settings-surface * {
+  min-width: 0;
+  max-width: 100%;
+}
+.settings-header {
+  margin-bottom: 16px;
+}
+.settings-layout {
+  display: grid;
+  grid-template-columns: 145px minmax(0, 1fr);
+  gap: 18px;
+  min-width: 0;
+  height: calc(100vh - 84px);
+}
+.settings-sidebar {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+}
+.settings-sidebar button {
+  justify-content: flex-start;
+  min-width: 0;
+  padding: 8px 9px;
+  text-align: left;
+  white-space: normal;
+}
+.settings-sidebar button.active {
+  background: #3378ef;
+  color: #fff;
+}
+.settings-content {
+  min-width: 0;
+  max-width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+}
+.settings-pane {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+}
+.settings-pane h2,
+.settings-pane h3 {
+  margin: 0;
+}
+.settings-pane p {
+  margin: 0;
+  color: #9aa8b8;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.settings-pane button,
+.settings-pane input,
+.settings-pane fieldset {
+  min-width: 0;
+  max-width: 100%;
+}
+.settings-pane > label {
+  display: grid;
+  gap: 5px;
+  color: #c8d2dd;
+  font-size: 11px;
+}
+.settings-pane > label input {
+  width: 100%;
+}
+.settings-service {
+  width: 100%;
+  margin: 0;
+  padding: 9px;
+  border: 1px solid #2d3a48;
+  border-radius: 8px;
+}
+.settings-service legend {
+  padding: 0 4px;
+  color: #edf3fa;
+  font-size: 11px;
+}
+.settings-service label,
+.settings-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 0;
+  color: #c8d2dd;
+  font-size: 11px;
+}
+.settings-service input,
+.settings-toggle-row input {
+  flex: 0 0 auto;
+}
+.settings-subscription-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 8px;
+  min-width: 0;
+  padding: 8px 0;
+  border-bottom: 1px solid #26313d;
+}
+.settings-subscription-row span {
+  min-width: 0;
+  color: #9aa8b8;
+  font-size: 10px;
+}
+.settings-subscription-row button {
+  grid-row: span 2;
+}

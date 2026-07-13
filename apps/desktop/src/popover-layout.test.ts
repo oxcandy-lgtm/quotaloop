@@ -20,6 +20,17 @@ describe("macOS Popover layout contract", () => {
     expect(main).toContain('className="popover-brand"');
     expect(main).toContain('role="tablist"');
     expect(main).toContain('aria-label="Settings"');
+    expect(main).toContain('invoke("open_settings_window")');
+  });
+
+  it("defines a compact, vertically scrolling Settings surface", () => {
+    expect(styles).toContain(".settings-surface");
+    expect(styles).toContain(".settings-layout");
+    expect(styles).toContain("grid-template-columns: 145px minmax(0, 1fr)");
+    expect(styles).toContain("overflow-y: auto");
+    expect(styles).toContain("overflow-x: hidden");
+    expect(main).toContain('className="settings-surface"');
+    expect(main).toContain('aria-label="Settings sections"');
   });
 
   it("keeps detect-only provider states truthful", () => {

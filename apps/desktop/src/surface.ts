@@ -1,8 +1,11 @@
-export type DesktopSurface = "popover" | "dashboard";
+export type DesktopSurface = "popover" | "dashboard" | "settings";
 export function resolveDesktopSurface(source: string): DesktopSurface {
-  return new URLSearchParams(
+  const surface = new URLSearchParams(
     source.startsWith("?") ? source : `?${source}`,
-  ).get("surface") === "dashboard"
+  ).get("surface");
+  return surface === "dashboard"
     ? "dashboard"
-    : "popover";
+    : surface === "settings"
+      ? "settings"
+      : "popover";
 }

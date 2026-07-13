@@ -301,6 +301,11 @@ function PopoverApp() {
       setNotice("Native notifications are unavailable in this environment.");
     }
   };
+  const openSettings = () => {
+    void invoke("open_settings_window").catch(() =>
+      setNotice("Settings window is unavailable in this build."),
+    );
+  };
   const toggleNotifications = () => {
     const next = !notificationsEnabled;
     void dispatchRequest("notification_preference_requested", {
@@ -366,7 +371,7 @@ function PopoverApp() {
         <button
           className="settings-tab"
           aria-label="Settings"
-          onClick={() => void invoke("open_dashboard", { section: "settings" })}
+          onClick={openSettings}
         >
           <Settings />
         </button>
@@ -588,8 +593,9 @@ function ModelLabPopover({
   );
 }
 
-function DashboardApp() {
-  const [section, setSection] = useState("overview");
+type DesktopRequest = <T>(type: DesktopRequestType, payload: T) => string;
+
+function useDesktopClient() {
   const [snapshot, setSnapshot] = useState<DesktopRuntimeSnapshotV2 | null>(
     null,
   );
@@ -597,24 +603,11 @@ function DashboardApp() {
     AIServicePreference[]
   >(() => defaultServicePreferences());
   const [refreshing, setRefreshing] = useState(false);
-  const [subscriptionDraft, setSubscriptionDraft] = useState<Subscription>({
-    id: "",
-    providerId: "codex-demo",
-    plan: "Demo plan",
-    monthlyPrice: 0,
-    currency: "USD",
-    renewalDate: new Date().toISOString().slice(0, 10),
-    autoRenew: false,
-    notes: "Synthetic local subscription",
-  });
-  const [editingSubscriptionId, setEditingSubscriptionId] = useState<
-    string | null
-  >(null);
   const [authorityUnavailable, setAuthorityUnavailable] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const pendingRequests = useRef(new Map<string, number>());
   const latestRevision = useRef(-1);
-  const request = useCallback(<T,>(type: DesktopRequestType, payload: T) => {
+  const request: DesktopRequest = useCallback((type, payload) => {
     const envelope = makeRequest(type, payload);
     setFeedback(null);
     const timeout = window.setTimeout(() => {
@@ -623,19 +616,25 @@ function DashboardApp() {
       setFeedback("Desktop authority did not respond. Retry.");
     }, 4000);
     pendingRequests.current.set(envelope.requestId, timeout);
-    void invoke<boolean>("request_desktop", { envelope }).then((sent) => {
-      if (!sent) {
+    void invoke<boolean>("request_desktop", { envelope })
+      .then((sent) => {
+        if (!sent) {
+          window.clearTimeout(timeout);
+          pendingRequests.current.delete(envelope.requestId);
+          setAuthorityUnavailable(true);
+          setFeedback("Desktop authority is unavailable.");
+        }
+      })
+      .catch(() => {
         window.clearTimeout(timeout);
         pendingRequests.current.delete(envelope.requestId);
         setAuthorityUnavailable(true);
         setFeedback("Desktop authority is unavailable.");
-      }
-    });
+      });
     return envelope.requestId;
   }, []);
   useEffect(() => {
     const listeners = Promise.all([
-      listen<string>("section-selected", (event) => setSection(event.payload)),
       listen<DesktopRuntimeSnapshotV2>("desktop-snapshot", (event) => {
         if (event.payload.revision < latestRevision.current) return;
         latestRevision.current = event.payload.revision;
@@ -652,8 +651,7 @@ function DashboardApp() {
             ? "Saved"
             : `Request rejected: ${event.payload.reason ?? "invalid request"}`,
         );
-        if (!event.payload.accepted) return;
-        setAuthorityUnavailable(false);
+        if (event.payload.accepted) setAuthorityUnavailable(false);
       }),
     ]);
     void listeners.then(() => request("desktop_snapshot_requested", {}));
@@ -664,11 +662,6 @@ function DashboardApp() {
       void listeners.then((items) => items.forEach((item) => item()));
     };
   }, [request]);
-  useEffect(() => {
-    // A newly mounted Dashboard starts at Overview, so release any stale
-    // Settings suppression before the first focus transition.
-    void invoke("set_dashboard_section", { section: "overview" });
-  }, []);
   const retry = () => {
     setAuthorityUnavailable(false);
     request("desktop_snapshot_requested", {});
@@ -678,10 +671,53 @@ function DashboardApp() {
     request("refresh_providers_requested", {});
     setRefreshing(false);
   };
+  return {
+    snapshot,
+    servicePreferences,
+    refreshing,
+    authorityUnavailable,
+    feedback,
+    request,
+    retry,
+    refresh,
+  };
+}
+
+function DashboardApp() {
+  const [section, setSection] = useState("overview");
+  const {
+    snapshot,
+    servicePreferences,
+    refreshing,
+    authorityUnavailable,
+    feedback,
+    request,
+    retry,
+    refresh,
+  } = useDesktopClient();
+  const [subscriptionDraft, setSubscriptionDraft] = useState<Subscription>({
+    id: "",
+    providerId: "codex-demo",
+    plan: "Demo plan",
+    monthlyPrice: 0,
+    currency: "USD",
+    renewalDate: new Date().toISOString().slice(0, 10),
+    autoRenew: false,
+    notes: "Synthetic local subscription",
+  });
+  const [editingSubscriptionId, setEditingSubscriptionId] = useState<
+    string | null
+  >(null);
+  useEffect(() => {
+    const listener = listen<string>("section-selected", (event) =>
+      setSection(event.payload),
+    );
+    return () => {
+      void listener.then((unlisten) => unlisten());
+    };
+  }, []);
   const updatePolicy = (next: QuotaAutomationPolicy) =>
     request("automation_policy_requested", next);
-  const updateServicePreference = (preference: AIServicePreference) =>
-    request("service_preference_requested", preference);
   const runModelLab = () => request("model_lab_run_requested", {});
   const subscriptions = snapshot?.persistent.subscriptions ?? [];
   const addSubscription = () => {
@@ -752,6 +788,10 @@ function DashboardApp() {
             key={item}
             className={section === item ? "active" : ""}
             onClick={() => {
+              if (item === "settings") {
+                void invoke("open_settings_window").catch(() => undefined);
+                return;
+              }
               setSection(item);
               void invoke("set_dashboard_section", { section: item });
             }}
@@ -999,70 +1039,433 @@ function DashboardApp() {
           </SubscriptionList>
         </section>
         <section className="dashboard-card" data-section="settings">
-          <h2>Settings &amp; safety</h2>
-          <p>
-            Notifications, pause state, and synthetic execution stay local. No
-            shell or repository access.
-          </p>
-          <button onClick={() => request("clear_local_data_requested", {})}>
-            Clear local data
-          </button>
-          <label className="service-toggle">
-            <span>Action notifications</span>
-            <input
-              type="checkbox"
-              checked={snapshot.persistent.preferences.notifications.enabled}
-              onChange={(event) =>
-                request("notification_preference_requested", {
-                  enabled: event.target.checked,
-                  actionCompleted:
-                    snapshot.persistent.preferences.notifications
-                      .actionCompleted,
-                })
-              }
-            />
-          </label>
-          <h3>AI Services</h3>
-          {[...servicePreferences]
-            .sort(
-              (left, right) => Number(right.favorite) - Number(left.favorite),
-            )
-            .map((preference) => (
-              <fieldset key={preference.serviceId} className="service-toggle">
-                <legend>{preference.serviceId}</legend>
-                {(
-                  [
-                    ["enabled", "Enabled"],
-                    ["visibleInQuota", "Quota"],
-                    ["visibleInModelLab", "Model Lab"],
-                    ["allowCatalogAccess", "Catalog"],
-                    ["allowBenchmarkRequests", "Benchmark"],
-                    ["favorite", "Favorite"],
-                  ] as const
-                ).map(([key, label]) => (
-                  <label key={key}>
-                    {label}
-                    <input
-                      type="checkbox"
-                      checked={preference[key]}
-                      onChange={(event) =>
-                        updateServicePreference({
-                          ...preference,
-                          [key]: event.target.checked,
-                        })
-                      }
-                    />
-                  </label>
-                ))}
-              </fieldset>
-            ))}
-          <p>
-            Credential support unavailable. Secure storage is not connected in
-            this build.
-          </p>
-          {feedback && <p role="status">{feedback}</p>}
+          <SettingsPanel
+            snapshot={snapshot}
+            servicePreferences={servicePreferences}
+            request={request}
+            feedback={feedback}
+          />
         </section>
       </section>
+    </main>
+  );
+}
+
+type SettingsSection =
+  | "ai_services"
+  | "model_lab"
+  | "automation"
+  | "notifications"
+  | "subscriptions"
+  | "storage_privacy"
+  | "advanced_safety";
+
+const settingsSections: Array<{ id: SettingsSection; label: string }> = [
+  { id: "ai_services", label: "AI Services" },
+  { id: "model_lab", label: "Model Lab" },
+  { id: "automation", label: "Automation" },
+  { id: "notifications", label: "Notifications" },
+  { id: "subscriptions", label: "Subscriptions" },
+  { id: "storage_privacy", label: "Storage & Privacy" },
+  { id: "advanced_safety", label: "Advanced / Safety" },
+];
+
+function SettingsPanel({
+  snapshot,
+  servicePreferences,
+  request,
+  feedback,
+}: {
+  snapshot: DesktopRuntimeSnapshotV2;
+  servicePreferences: AIServicePreference[];
+  request: DesktopRequest;
+  feedback: string | null;
+}) {
+  const [activeSection, setActiveSection] =
+    useState<SettingsSection>("ai_services");
+  const [subscriptionDraft, setSubscriptionDraft] = useState<Subscription>({
+    id: "",
+    providerId: "codex-demo",
+    plan: "Demo plan",
+    monthlyPrice: 0,
+    currency: "USD",
+    renewalDate: new Date().toISOString().slice(0, 10),
+    autoRenew: false,
+    notes: "Synthetic local subscription",
+  });
+  const [editingSubscriptionId, setEditingSubscriptionId] = useState<
+    string | null
+  >(null);
+  const demoServicePreference = servicePreferences.find(
+    (preference) => preference.serviceId === "codex-demo",
+  );
+  const subscriptions = snapshot.persistent.subscriptions;
+  const addSubscription = () => {
+    const subscription = {
+      ...subscriptionDraft,
+      id: subscriptionDraft.id || crypto.randomUUID(),
+    };
+    request("subscription_requested", {
+      operation: editingSubscriptionId ? "update" : "add",
+      subscription,
+    });
+    setSubscriptionDraft((current) => ({ ...current, id: "" }));
+    setEditingSubscriptionId(null);
+  };
+  const toggleModel = (modelId: string) => {
+    const current = snapshot.persistent.modelLabPreferences.selectedModelIds;
+    request("model_lab_selection_requested", {
+      selectedModelIds: current.includes(modelId)
+        ? current.filter((id) => id !== modelId)
+        : [...current, modelId],
+    });
+  };
+  const updateServicePreference = (
+    preference: AIServicePreference,
+    key: keyof Omit<AIServicePreference, "serviceId">,
+    value: boolean,
+  ) => {
+    request("service_preference_requested", {
+      ...preference,
+      [key]: value,
+    });
+  };
+  const renderServicePreferences = () => (
+    <>
+      <h2>AI Services</h2>
+      <p>Capabilities remain visible even when a service is disabled.</p>
+      {[...servicePreferences]
+        .sort((left, right) => Number(right.favorite) - Number(left.favorite))
+        .map((preference) => (
+          <fieldset key={preference.serviceId} className="settings-service">
+            <legend>{preference.serviceId}</legend>
+            {(
+              [
+                ["enabled", "Enabled"],
+                ["visibleInQuota", "Quota"],
+                ["visibleInModelLab", "Model Lab"],
+                ["allowCatalogAccess", "Catalog"],
+                ["allowBenchmarkRequests", "Benchmark"],
+                ["favorite", "Favorite"],
+              ] as const
+            ).map(([key, label]) => (
+              <label key={key}>
+                {label}
+                <input
+                  type="checkbox"
+                  checked={preference[key]}
+                  onChange={(event) =>
+                    updateServicePreference(
+                      preference,
+                      key,
+                      event.target.checked,
+                    )
+                  }
+                />
+              </label>
+            ))}
+          </fieldset>
+        ))}
+    </>
+  );
+  const renderModelLab = () => (
+    <>
+      <h2>Model Lab</h2>
+      <p>Manual Demo / Synthetic fixtures only. No network or real provider.</p>
+      <p>
+        Status: {snapshot.modelLabRunState.status} ·{" "}
+        {snapshot.modelLabRunState.progress}%
+      </p>
+      <button
+        className="primary"
+        onClick={() => request("model_lab_run_requested", {})}
+        disabled={snapshot.modelLabRunState.status === "running"}
+      >
+        Run synthetic benchmark
+      </button>
+      <fieldset
+        className="model-selection"
+        disabled={
+          demoServicePreference?.enabled !== true ||
+          demoServicePreference.visibleInModelLab !== true ||
+          demoServicePreference.allowBenchmarkRequests !== true
+        }
+      >
+        <legend>Select synthetic models</legend>
+        {syntheticCatalog.map((model) => (
+          <label key={model.id}>
+            <input
+              type="checkbox"
+              checked={snapshot.persistent.modelLabPreferences.selectedModelIds.includes(
+                model.id,
+              )}
+              onChange={() => toggleModel(model.id)}
+            />
+            {model.name} <small>Demo / Synthetic</small>
+          </label>
+        ))}
+      </fieldset>
+      <h3>Recent synthetic results</h3>
+      {snapshot.persistent.modelLabHistory.length ? (
+        snapshot.persistent.modelLabHistory.slice(0, 5).map((record) => (
+          <p key={record.id}>
+            {record.outcome} · {new Date(record.completedAt).toLocaleString()}
+          </p>
+        ))
+      ) : (
+        <p>No synthetic results yet.</p>
+      )}
+    </>
+  );
+  const renderAutomation = () => {
+    const policy = snapshot.persistent.automationPolicy;
+    return (
+      <>
+        <h2>Automation</h2>
+        <p>Only the local Mock Codex Demo action can execute in this beta.</p>
+        <p>
+          State: <b>{policy.enabled ? "Enabled" : "Off"}</b>
+          {policy.paused ? " · Paused" : ""}
+        </p>
+        <p>
+          Daily maximum: {policy.maximumRunsPerDay} · Active hours:{" "}
+          {policy.activeHours.start}–{policy.activeHours.end}
+        </p>
+        <button
+          onClick={() =>
+            request("automation_policy_requested", {
+              ...policy,
+              enabled: !policy.enabled,
+            })
+          }
+        >
+          {policy.enabled ? "Disable automation" : "Enable automation"}
+        </button>
+        <button
+          onClick={() =>
+            request("automation_policy_requested", {
+              ...policy,
+              paused: !policy.paused,
+            })
+          }
+        >
+          {policy.paused ? "Resume" : "Pause"}
+        </button>
+      </>
+    );
+  };
+  const renderNotifications = () => (
+    <>
+      <h2>Notifications</h2>
+      <label className="settings-toggle-row">
+        <span>Action notifications</span>
+        <input
+          type="checkbox"
+          checked={snapshot.persistent.preferences.notifications.enabled}
+          onChange={(event) =>
+            request("notification_preference_requested", {
+              enabled: event.target.checked,
+              actionCompleted:
+                snapshot.persistent.preferences.notifications.actionCompleted,
+            })
+          }
+        />
+      </label>
+      <p>Permission: {snapshot.notificationPermission}</p>
+      <p>Notification preferences remain local to this Desktop build.</p>
+    </>
+  );
+  const renderSubscriptions = () => (
+    <>
+      <h2>Subscriptions</h2>
+      <p>Local synthetic subscription records only.</p>
+      {subscriptions.map((subscription) => (
+        <div key={subscription.id} className="settings-subscription-row">
+          <strong>{subscription.plan}</strong>
+          <span>
+            {subscription.providerId} · {subscription.currency}{" "}
+            {subscription.monthlyPrice}
+          </span>
+          <button
+            onClick={() => {
+              setSubscriptionDraft(subscription);
+              setEditingSubscriptionId(subscription.id);
+            }}
+          >
+            Edit
+          </button>
+          <button
+            onClick={() =>
+              request("subscription_requested", {
+                operation: "remove",
+                subscriptionId: subscription.id,
+              })
+            }
+          >
+            Remove
+          </button>
+        </div>
+      ))}
+      <label>
+        Provider
+        <input
+          value={subscriptionDraft.providerId}
+          onChange={(event) =>
+            setSubscriptionDraft({
+              ...subscriptionDraft,
+              providerId: event.target.value,
+            })
+          }
+        />
+      </label>
+      <label>
+        Plan
+        <input
+          value={subscriptionDraft.plan}
+          onChange={(event) =>
+            setSubscriptionDraft({
+              ...subscriptionDraft,
+              plan: event.target.value,
+            })
+          }
+        />
+      </label>
+      <label>
+        Monthly price
+        <input
+          type="number"
+          min="0"
+          value={subscriptionDraft.monthlyPrice}
+          onChange={(event) =>
+            setSubscriptionDraft({
+              ...subscriptionDraft,
+              monthlyPrice: Number(event.target.value),
+            })
+          }
+        />
+      </label>
+      <label>
+        Renewal date
+        <input
+          type="date"
+          value={subscriptionDraft.renewalDate}
+          onChange={(event) =>
+            setSubscriptionDraft({
+              ...subscriptionDraft,
+              renewalDate: event.target.value,
+            })
+          }
+        />
+      </label>
+      <label className="settings-toggle-row">
+        <span>Auto renew</span>
+        <input
+          type="checkbox"
+          checked={subscriptionDraft.autoRenew}
+          onChange={(event) =>
+            setSubscriptionDraft({
+              ...subscriptionDraft,
+              autoRenew: event.target.checked,
+            })
+          }
+        />
+      </label>
+      <button onClick={addSubscription}>
+        {editingSubscriptionId ? "Save subscription" : "Add subscription"}
+      </button>
+    </>
+  );
+  const renderStoragePrivacy = () => (
+    <>
+      <h2>Storage &amp; Privacy</h2>
+      <p>
+        QuotaLoop stores only validated local Desktop state. No cloud sync or
+        external request is enabled.
+      </p>
+      <button onClick={() => request("clear_local_data_requested", {})}>
+        Clear local data
+      </button>
+    </>
+  );
+  const renderAdvancedSafety = () => (
+    <>
+      <h2>Advanced / Safety</h2>
+      <h3>API Connections</h3>
+      <p>Credential support unavailable.</p>
+      <p>Secure credential storage is not connected in this build.</p>
+      <p>
+        No secret input, Reveal, Copy, Test, masked fake secret, persistence,
+        authentication, or external request is available.
+      </p>
+    </>
+  );
+  const content = {
+    ai_services: renderServicePreferences,
+    model_lab: renderModelLab,
+    automation: renderAutomation,
+    notifications: renderNotifications,
+    subscriptions: renderSubscriptions,
+    storage_privacy: renderStoragePrivacy,
+    advanced_safety: renderAdvancedSafety,
+  }[activeSection]();
+  return (
+    <div className="settings-layout">
+      <nav className="settings-sidebar" aria-label="Settings sections">
+        {settingsSections.map((item) => (
+          <button
+            key={item.id}
+            className={activeSection === item.id ? "active" : ""}
+            onClick={() => setActiveSection(item.id)}
+          >
+            {item.label}
+          </button>
+        ))}
+      </nav>
+      <section className="settings-content" aria-live="polite">
+        <div className="settings-pane">{content}</div>
+        {feedback && <p role="status">{feedback}</p>}
+      </section>
+    </div>
+  );
+}
+
+function SettingsApp() {
+  const {
+    snapshot,
+    servicePreferences,
+    authorityUnavailable,
+    feedback,
+    request,
+    retry,
+  } = useDesktopClient();
+  if (!snapshot?.hydrated)
+    return (
+      <main className="settings-surface">
+        {authorityUnavailable ? (
+          <div role="alert">
+            <p>Desktop authority unavailable.</p>
+            <button onClick={retry}>Retry</button>
+          </div>
+        ) : (
+          <p role="status">Loading Desktop authority…</p>
+        )}
+      </main>
+    );
+  return (
+    <main className="settings-surface">
+      <header className="settings-header">
+        <div className="mark" aria-hidden="true">
+          <Gauge />
+        </div>
+        <strong>QuotaLoop Settings</strong>
+        <span className="online">LOCAL</span>
+      </header>
+      <SettingsPanel
+        snapshot={snapshot}
+        servicePreferences={servicePreferences}
+        request={request}
+        feedback={feedback}
+      />
     </main>
   );
 }
@@ -1074,11 +1477,18 @@ function App() {
   } catch {
     /* browser preview */
   }
+  const fallbackSurface =
+    label === "dashboard"
+      ? "?surface=dashboard"
+      : label === "settings"
+        ? "?surface=settings"
+        : "?surface=popover";
   const surface = resolveDesktopSurface(
-    window.location.search ||
-      (label === "dashboard" ? "?surface=dashboard" : "?surface=popover"),
+    window.location.search || fallbackSurface,
   );
-  return surface === "dashboard" ? <DashboardApp /> : <PopoverApp />;
+  if (surface === "dashboard") return <DashboardApp />;
+  if (surface === "settings") return <SettingsApp />;
+  return <PopoverApp />;
 }
 
 function ProviderRow({
