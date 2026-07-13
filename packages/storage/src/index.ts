@@ -3,21 +3,49 @@ import {
   type ExecutionRecord,
   type QuotaAutomationPolicy,
   type Subscription,
+  type AIServicePreference,
+  type CredentialMetadata,
+  type ModelLabHistory,
+  type ModelLabPreferences,
 } from "@quotaloop/contracts";
 export interface AppData {
-  schemaVersion: 1;
+  schemaVersion: 2;
   policy: QuotaAutomationPolicy;
   history: ExecutionRecord[];
   subscriptions: Subscription[];
   theme: "light" | "dark" | "system";
   onboardingComplete: boolean;
   notifications: NotificationPreferences;
+  aiServices: AIServicePreference[];
+  credentials: CredentialMetadata[];
+  modelLab: ModelLabPreferences;
+  modelLabHistory: ModelLabHistory[];
 }
 export interface NotificationPreferences {
   webEnabled: boolean;
   desktopEnabled: boolean;
   actionCompleted: boolean;
   testNotification: boolean;
+}
+export function normalizeServicePreferences(
+  preferences: AIServicePreference[],
+): AIServicePreference[] {
+  const seen = new Map<string, AIServicePreference>();
+  for (const preference of preferences) {
+    if (!seen.has(preference.serviceId))
+      seen.set(preference.serviceId, preference);
+    else
+      seen.set(preference.serviceId, {
+        serviceId: preference.serviceId,
+        enabled: false,
+        visibleInQuota: false,
+        visibleInModelLab: false,
+        allowCatalogAccess: false,
+        allowBenchmarkRequests: false,
+        favorite: false,
+      });
+  }
+  return [...seen.values()];
 }
 export class LocalStorageRepository {
   constructor(private readonly key = "quotaloop.v1") {}
@@ -29,8 +57,18 @@ export class LocalStorageRepository {
       return {
         ...fallback,
         ...value,
-        schemaVersion: 1,
+        schemaVersion: 2,
         policy: automationPolicySchema.parse(value.policy),
+        aiServices: Array.isArray(value.aiServices)
+          ? normalizeServicePreferences(value.aiServices)
+          : fallback.aiServices,
+        credentials: Array.isArray(value.credentials)
+          ? value.credentials
+          : fallback.credentials,
+        modelLab: value.modelLab ?? fallback.modelLab,
+        modelLabHistory: Array.isArray(value.modelLabHistory)
+          ? value.modelLabHistory
+          : fallback.modelLabHistory,
       };
     } catch {
       return fallback;

@@ -121,3 +121,38 @@ export interface Subscription {
   autoRenew: boolean;
   notes: string;
 }
+
+export interface AIServiceDefinition {
+  serviceId: string;
+  displayName: string;
+  integrationLevel: IntegrationLevel;
+  capabilities: ProviderCapabilities;
+}
+
+export interface AIServicePreference {
+  serviceId: string;
+  enabled: boolean;
+  visibleInQuota: boolean;
+  visibleInModelLab: boolean;
+  allowCatalogAccess: boolean;
+  allowBenchmarkRequests: boolean;
+  favorite: boolean;
+}
+
+export interface CredentialMetadata {
+  providerId: string;
+  status: "not_configured" | "configured" | "unavailable";
+  updatedAt?: string;
+}
+
+export interface ModelLabPreferences {
+  selectedModelIds: string[];
+}
+
+export interface ModelLabHistory {
+  id: string;
+  modelIds: string[];
+  completedAt: string;
+  outcome: "success" | "failed";
+  results: Record<string, number>;
+}

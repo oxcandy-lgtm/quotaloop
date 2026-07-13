@@ -42,7 +42,7 @@ export const runtimeMode: RuntimeMode = "standalone_web";
 
 const repo = new LocalStorageRepository();
 const initial: AppData = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   policy: defaultAutomationPolicy(),
   history: [],
   subscriptions: [],
@@ -54,6 +54,21 @@ const initial: AppData = {
     actionCompleted: true,
     testNotification: true,
   },
+  aiServices: providerCatalog.map((provider) => ({
+    serviceId: provider.id,
+    enabled: true,
+    visibleInQuota: true,
+    visibleInModelLab: true,
+    allowCatalogAccess: true,
+    allowBenchmarkRequests: provider.integrationLevel === "mock",
+    favorite: provider.integrationLevel === "mock",
+  })),
+  credentials: providerCatalog.map((provider) => ({
+    providerId: provider.id,
+    status: "unavailable" as const,
+  })),
+  modelLab: { selectedModelIds: [] },
+  modelLabHistory: [],
 };
 const signals: ResetSignal[] = [
   {
