@@ -144,6 +144,13 @@ export interface CredentialMetadata {
   status: "not_configured" | "configured" | "unavailable";
   updatedAt?: string;
 }
+export const credentialMetadataSchema = z
+  .object({
+    providerId: z.string().min(1),
+    status: z.enum(["not_configured", "configured", "unavailable"]),
+    updatedAt: z.string().datetime().optional(),
+  })
+  .strict();
 
 export interface ModelLabPreferences {
   selectedModelIds: string[];
@@ -155,4 +162,68 @@ export interface ModelLabHistory {
   completedAt: string;
   outcome: "success" | "failed";
   results: Record<string, number>;
+}
+
+export type DashboardSection =
+  | "overview"
+  | "providers"
+  | "model_lab"
+  | "automation"
+  | "history"
+  | "signals"
+  | "subscriptions"
+  | "settings";
+export type ProviderDetectionState =
+  | "installed"
+  | "not_installed"
+  | "timeout"
+  | "failed"
+  | "unsupported"
+  | "not_checked";
+export type NotificationPermissionState =
+  "unknown" | "granted" | "denied" | "unavailable";
+export interface SharedUserPreferencesV2 {
+  theme: "light" | "dark" | "system";
+  aiServices: AIServicePreference[];
+  credentials: CredentialMetadata[];
+  notifications: { enabled: boolean; actionCompleted: boolean };
+}
+export interface DesktopPersistentStateV2 {
+  schemaVersion: 2;
+  preferences: SharedUserPreferencesV2;
+  automationPolicy: QuotaAutomationPolicy;
+  executionHistory: ExecutionRecord[];
+  modelLabPreferences: ModelLabPreferences;
+  modelLabHistory: ModelLabHistory[];
+  subscriptions: Subscription[];
+}
+export interface ModelLabRunState {
+  status: "idle" | "running" | "completed" | "failed";
+  progress: number;
+  runId: string | null;
+}
+export interface DesktopRuntimeSnapshotV2 {
+  schemaVersion: 2;
+  revision: number;
+  hydrated: boolean;
+  persistent: DesktopPersistentStateV2;
+  providerStates: Array<{
+    providerId: string;
+    state: ProviderDetectionState;
+    version?: string | null;
+  }>;
+  modelLabRunState: ModelLabRunState;
+  notificationPermission: NotificationPermissionState;
+}
+export interface DesktopRequestEnvelope<T = unknown> {
+  schemaVersion: 2;
+  requestId: string;
+  type: string;
+  payload: T;
+}
+export interface DesktopRequestResult {
+  requestId: string;
+  accepted: boolean;
+  revision: number;
+  reason?: string;
 }

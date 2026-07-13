@@ -19,6 +19,7 @@ import {
 import { MockCodexProvider } from "@quotaloop/providers";
 import type {
   AIServicePreference,
+  DesktopRuntimeSnapshotV2,
   ExecutionRecord,
   QuotaAutomationPolicy,
 } from "@quotaloop/contracts";
@@ -124,6 +125,20 @@ function PopoverApp() {
     setDetections(
       Object.fromEntries(results.map((result) => [result.provider_id, result])),
     );
+    authorityRef.current.setProviderStates(
+      results.map((result) =>
+        result.version === undefined
+          ? { providerId: result.provider_id, state: result.state }
+          : {
+              providerId: result.provider_id,
+              state: result.state,
+              version: result.version,
+            },
+      ),
+    );
+    void invoke("broadcast_desktop_snapshot", {
+      snapshot: authorityRef.current.getSnapshot(),
+    });
     void invoke("broadcast_provider_state", { providers: results });
     setRefreshing(false);
   }, []);
@@ -146,23 +161,31 @@ function PopoverApp() {
     setPolicyState(result.policy);
     setHistory([]);
     setServicePreferences(defaultServicePreferences());
+    authorityRef.current.setServicePreferences(defaultServicePreferences());
     setNotice("Local data cleared; automation is OFF.");
     void invoke("broadcast_policy_state", { policy: result.policy });
     void invoke("broadcast_history_state", { history: [] });
+    void invoke("broadcast_desktop_snapshot", {
+      snapshot: authorityRef.current.getSnapshot(),
+    });
     void invoke("broadcast_service_preferences", {
       preferences: defaultServicePreferences(),
     });
   };
   const runModelLab = () => {
     setModelLabStatus("running");
-    void authorityRef.current.modelLab
-      .run(
+    void authorityRef.current
+      .runModelLab(
         async () =>
           new Promise<void>((resolve) => window.setTimeout(resolve, 250)),
       )
       .then((result) => {
-        if (result === "completed") setModelLabStatus("completed");
-        else if (result === "discarded") setModelLabStatus("idle");
+        if (result.accepted) setModelLabStatus("completed");
+        else if (result.reason === "reset_generation")
+          setModelLabStatus("idle");
+        void invoke("broadcast_desktop_snapshot", {
+          snapshot: authorityRef.current.getSnapshot(),
+        });
       });
   };
   const updateServicePreference = (preference: AIServicePreference) => {
@@ -170,6 +193,7 @@ function PopoverApp() {
       item.serviceId === preference.serviceId ? preference : item,
     );
     setServicePreferences(next);
+    authorityRef.current.setServicePreferences(next);
     localStorage.setItem("quotaloop.desktop.ai-services", JSON.stringify(next));
     void invoke("broadcast_service_preferences", { preferences: next });
   };
@@ -214,6 +238,13 @@ function PopoverApp() {
       "service-preference-requested",
       (event) => updateServicePreference(event.payload),
     );
+    const snapshotRequestUnlisten = listen(
+      "desktop-snapshot-requested",
+      () =>
+        void invoke("broadcast_desktop_snapshot", {
+          snapshot: authorityRef.current.getSnapshot(),
+        }),
+    );
     return () => {
       void refreshUnlisten.then((unlisten) => unlisten());
       void pauseUnlisten.then((unlisten) => unlisten());
@@ -222,18 +253,28 @@ function PopoverApp() {
       void clearDataUnlisten.then((unlisten) => unlisten());
       void modelLabUnlisten.then((unlisten) => unlisten());
       void servicePreferenceUnlisten.then((unlisten) => unlisten());
+      void snapshotRequestUnlisten.then((unlisten) => unlisten());
     };
   }, [refresh]);
   useEffect(() => {
-    authorityRef.current.setOnRecord(async (eventKey) => {
-      setHistory(controllerRef.current.records as History[]);
-      void invoke("broadcast_history_state", {
-        history: controllerRef.current.records,
+    void authorityRef.current.hydrate().then(() => {
+      authorityRef.current.setServicePreferences(servicePreferences);
+      authorityRef.current.setOnRecord(async (eventKey) => {
+        setHistory(controllerRef.current.records as History[]);
+        void invoke("broadcast_history_state", {
+          history: controllerRef.current.records,
+        });
+        void invoke("broadcast_desktop_snapshot", {
+          snapshot: authorityRef.current.getSnapshot(),
+        });
+        await refresh();
+        void notifyCompletion(eventKey);
       });
-      await refresh();
-      void notifyCompletion(eventKey);
+      authorityRef.current.start();
+      void invoke("broadcast_desktop_snapshot", {
+        snapshot: authorityRef.current.getSnapshot(),
+      });
     });
-    authorityRef.current.start();
     return () => {
       authorityRef.current.stop();
     };
@@ -252,6 +293,9 @@ function PopoverApp() {
       setHistory(controllerRef.current.records as History[]);
       void invoke("broadcast_history_state", {
         history: controllerRef.current.records,
+      });
+      void invoke("broadcast_desktop_snapshot", {
+        snapshot: authorityRef.current.getSnapshot(),
       });
       await notifyCompletion(result.eventKey);
     } else setNotice(`Demo blocked: ${result.decision.reason}`);
@@ -501,7 +545,7 @@ function ModelLabPopover({
         Run synthetic benchmark
       </button>
       <button
-        onClick={() => void invoke("open_dashboard", { section: "modelLab" })}
+        onClick={() => void invoke("open_dashboard", { section: "model_lab" })}
       >
         Open full results
       </button>
@@ -511,35 +555,21 @@ function ModelLabPopover({
 
 function DashboardApp() {
   const [section, setSection] = useState("overview");
-  const [policy, setPolicy] = useState(() => loadPolicy());
-  const [history, setHistory] = useState<History[]>(
-    () => loadHistory() as History[],
+  const [snapshot, setSnapshot] = useState<DesktopRuntimeSnapshotV2 | null>(
+    null,
   );
-  const [detections, setDetections] = useState<Record<string, Detection>>({});
   const [servicePreferences, setServicePreferences] = useState<
     AIServicePreference[]
   >(() => defaultServicePreferences());
   const [refreshing, setRefreshing] = useState(false);
   useEffect(() => {
-    void invoke("request_refresh_providers");
+    void invoke("request_desktop_snapshot");
     const listeners = Promise.all([
       listen<string>("section-selected", (event) => setSection(event.payload)),
-      listen<QuotaAutomationPolicy>("automation-policy-changed", (event) =>
-        setPolicy(event.payload),
-      ),
-      listen<History[]>("history-changed", (event) =>
-        setHistory(event.payload),
-      ),
-      listen<Detection[]>("provider-state-changed", (event) =>
-        setDetections(
-          Object.fromEntries(
-            event.payload.map((item) => [item.provider_id, item]),
-          ),
-        ),
-      ),
-      listen<AIServicePreference[]>("service-preferences-changed", (event) =>
-        setServicePreferences(event.payload),
-      ),
+      listen<DesktopRuntimeSnapshotV2>("desktop-snapshot", (event) => {
+        setSnapshot(event.payload);
+        setServicePreferences(event.payload.persistent.preferences.aiServices);
+      }),
     ]);
     return () => {
       void listeners.then((items) => items.forEach((item) => item()));
@@ -554,7 +584,25 @@ function DashboardApp() {
     void invoke("request_policy_update", { policy: next });
   const updateServicePreference = (preference: AIServicePreference) =>
     void invoke("request_service_preference", { preference });
-  const detectedCount = Object.values(detections).filter(
+  if (!snapshot?.hydrated)
+    return (
+      <main className="dashboard-surface">
+        <p role="status">Loading Desktop authority…</p>
+      </main>
+    );
+  const policy = snapshot.persistent.automationPolicy;
+  const history = snapshot.persistent.executionHistory;
+  const detections = Object.fromEntries(
+    snapshot.providerStates.map((item) => [
+      item.providerId,
+      {
+        provider_id: item.providerId,
+        state: item.state,
+        version: item.version,
+      },
+    ]),
+  );
+  const detectedCount = snapshot.providerStates.filter(
     (item) => item.state === "installed",
   ).length;
   return (
@@ -571,7 +619,7 @@ function DashboardApp() {
         {[
           "overview",
           "providers",
-          "modelLab",
+          "model_lab",
           "automation",
           "history",
           "signals",
@@ -587,8 +635,8 @@ function DashboardApp() {
           </button>
         ))}
       </nav>
-      <section className="dashboard-grid">
-        <section className="dashboard-card">
+      <section className="dashboard-grid" data-active={section}>
+        <section className="dashboard-card" data-section="overview">
           <h2>Overview</h2>
           <p>
             {detectedCount} provider{detectedCount === 1 ? "" : "s"} detected by
@@ -596,7 +644,18 @@ function DashboardApp() {
           </p>
           <strong>Codex Demo · 72% session · 64% weekly (synthetic)</strong>
         </section>
-        <section className="dashboard-card">
+        <section className="dashboard-card" data-section="model_lab">
+          <h2>Model Lab</h2>
+          <p>Local synthetic catalog and benchmark fixtures only.</p>
+          <p>
+            Runtime: {snapshot.modelLabRunState.status} ·{" "}
+            {snapshot.modelLabRunState.progress}%
+          </p>
+          <button onClick={() => void invoke("request_model_lab_run")}>
+            Run synthetic benchmark
+          </button>
+        </section>
+        <section className="dashboard-card" data-section="providers">
           <h2>Providers</h2>
           {providers.map((provider) => (
             <ProviderStatus
@@ -613,7 +672,7 @@ function DashboardApp() {
             {refreshing ? "Refreshing…" : "Refresh providers"}
           </button>
         </section>
-        <section className="dashboard-card">
+        <section className="dashboard-card" data-section="automation">
           <h2>Automation</h2>
           <p>
             Only the Mock Codex Demo action can execute. Controls route to the
@@ -647,7 +706,7 @@ function DashboardApp() {
             {policy.paused ? "Resume" : "Pause"}
           </button>
         </section>
-        <section className="dashboard-card">
+        <section className="dashboard-card" data-section="history">
           <h2>History</h2>
           {history.length ? (
             history.slice(0, 5).map((item) => (
@@ -660,20 +719,20 @@ function DashboardApp() {
             <p>No execution records.</p>
           )}
         </section>
-        <section className="dashboard-card">
+        <section className="dashboard-card" data-section="signals">
           <h2>Signals</h2>
           <p>
             Demo signal fixtures only; no live provider signals are available.
           </p>
         </section>
-        <section className="dashboard-card">
+        <section className="dashboard-card" data-section="subscriptions">
           <h2>Subscriptions</h2>
           <p>
             Local subscription model is empty in this beta; cloud billing is
             disabled.
           </p>
         </section>
-        <section className="dashboard-card">
+        <section className="dashboard-card" data-section="settings">
           <h2>Settings &amp; safety</h2>
           <p>
             Notifications, pause state, and synthetic execution stay local. No

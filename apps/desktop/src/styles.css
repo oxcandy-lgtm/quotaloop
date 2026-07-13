@@ -329,6 +329,24 @@ button:disabled {
   background: #18212b;
   min-height: 130px;
 }
+.dashboard-grid[data-active="overview"]
+  > section:not([data-section="overview"]) {
+  display: none;
+}
+.dashboard-grid[data-active="providers"]
+  > section:not([data-section="providers"]),
+.dashboard-grid[data-active="model_lab"]
+  > section:not([data-section="model_lab"]),
+.dashboard-grid[data-active="automation"]
+  > section:not([data-section="automation"]),
+.dashboard-grid[data-active="history"] > section:not([data-section="history"]),
+.dashboard-grid[data-active="signals"] > section:not([data-section="signals"]),
+.dashboard-grid[data-active="subscriptions"]
+  > section:not([data-section="subscriptions"]),
+.dashboard-grid[data-active="settings"]
+  > section:not([data-section="settings"]) {
+  display: none;
+}
 .dashboard-card h2 {
   margin: 0 0 10px;
   font-size: 16px;

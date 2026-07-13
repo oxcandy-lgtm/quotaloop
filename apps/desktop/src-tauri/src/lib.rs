@@ -160,6 +160,16 @@ fn request_service_preference(app: tauri::AppHandle, preference: serde_json::Val
 }
 
 #[tauri::command]
+fn request_desktop_snapshot(app: tauri::AppHandle) {
+    let _ = app.emit_to("popover", "desktop-snapshot-requested", ());
+}
+
+#[tauri::command]
+fn broadcast_desktop_snapshot(app: tauri::AppHandle, snapshot: serde_json::Value) {
+    let _ = app.emit_to("dashboard", "desktop-snapshot", snapshot);
+}
+
+#[tauri::command]
 fn broadcast_service_preferences(app: tauri::AppHandle, preferences: serde_json::Value) {
     let _ = app.emit_to("dashboard", "service-preferences-changed", preferences);
 }
@@ -187,11 +197,13 @@ fn show_main_window(app: tauri::AppHandle) {
 #[tauri::command]
 fn open_dashboard(app: tauri::AppHandle, section: Option<String>) {
     show_window(&app, "dashboard");
-    let _ = app.emit_to(
-        "dashboard",
-        "section-selected",
-        section.unwrap_or_else(|| "overview".into()),
-    );
+    let requested = section.unwrap_or_else(|| "overview".into());
+    let selected = match requested.as_str() {
+        "overview" | "providers" | "model_lab" | "automation" | "history" | "signals"
+        | "subscriptions" | "settings" => requested,
+        _ => "overview".into(),
+    };
+    let _ = app.emit_to("dashboard", "section-selected", selected);
 }
 
 #[tauri::command]
@@ -286,6 +298,8 @@ pub fn run() {
             request_refresh_providers,
             request_model_lab_run,
             request_service_preference,
+            request_desktop_snapshot,
+            broadcast_desktop_snapshot,
             broadcast_service_preferences,
             broadcast_policy_state,
             broadcast_history_state,

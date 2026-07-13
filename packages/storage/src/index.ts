@@ -1,5 +1,6 @@
 import {
   automationPolicySchema,
+  credentialMetadataSchema,
   type ExecutionRecord,
   type QuotaAutomationPolicy,
   type Subscription,
@@ -63,7 +64,16 @@ export class LocalStorageRepository {
           ? normalizeServicePreferences(value.aiServices)
           : fallback.aiServices,
         credentials: Array.isArray(value.credentials)
-          ? value.credentials
+          ? value.credentials.flatMap((item) => {
+              const parsed = credentialMetadataSchema.safeParse(item);
+              if (!parsed.success) return [];
+              const { providerId, status, updatedAt } = parsed.data;
+              return [
+                updatedAt
+                  ? { providerId, status, updatedAt }
+                  : { providerId, status },
+              ];
+            })
           : fallback.credentials,
         modelLab: value.modelLab ?? fallback.modelLab,
         modelLabHistory: Array.isArray(value.modelLabHistory)
